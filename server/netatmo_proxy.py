@@ -127,28 +127,33 @@ def health():
         return jsonify({"ok": True, "has_data": _weather is not None})
 
 
+@app.route("/log")
+def log_feed():
+    with _lock:
+        text = "\n".join(_log_buffer) or "(no log entries yet)"
+    return Response(text, mimetype="text/plain")
+
+
 @app.route("/")
 def index():
     with _lock:
         w = dict(_weather) if _weather else None
-        logs = list(_log_buffer)
 
     updated = ""
     if w and w.get("updated_at"):
         updated = datetime.fromtimestamp(w["updated_at"]).strftime("%Y-%m-%d %H:%M:%S")
 
-    weather_rows = ""
     if w:
         rows = [
-            ("City",             w.get("city", "—")),
-            ("Indoor temp",      f"{w['indoor_temp']} °C"),
-            ("Indoor humidity",  f"{w['indoor_humidity']} %"),
-            ("Pressure",         f"{w['pressure']} hPa"),
-            ("Outdoor temp",     f"{w['outdoor_temp']} °C"),
-            ("Rain 1h",          f"{w['rain_1h']} mm"),
-            ("Rain 24h",         f"{w['rain_24h']} mm"),
-            ("Raining now",      "yes" if w["is_raining"] else "no"),
-            ("Last updated",     updated),
+            ("City",            w.get("city", "—")),
+            ("Indoor temp",     f"{w['indoor_temp']} °C"),
+            ("Indoor humidity", f"{w['indoor_humidity']} %"),
+            ("Pressure",        f"{w['pressure']} hPa"),
+            ("Outdoor temp",    f"{w['outdoor_temp']} °C"),
+            ("Rain 1h",         f"{w['rain_1h']} mm"),
+            ("Rain 24h",        f"{w['rain_24h']} mm"),
+            ("Raining now",     "yes" if w["is_raining"] else "no"),
+            ("Last updated",    updated),
         ]
         weather_rows = "\n".join(
             f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in rows
@@ -156,54 +161,58 @@ def index():
     else:
         weather_rows = "<tr><td colspan='2'>No data yet</td></tr>"
 
-    log_text = "\n".join(logs[-200:]) or "(no log entries yet)"
-
-    html = f"""<!doctype html>
+    html = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Netatmo Hub</title>
   <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{
-      background: #0d1117;
-      color: #c9d1d9;
-      font-family: 'Courier New', monospace;
-      font-size: 14px;
-      padding: 24px;
-    }}
-    h1 {{ color: #58a6ff; margin-bottom: 4px; font-size: 20px; }}
-    .subtitle {{ color: #8b949e; margin-bottom: 24px; font-size: 12px; }}
-    h2 {{ color: #8b949e; font-size: 13px; text-transform: uppercase;
-          letter-spacing: 1px; margin-bottom: 8px; margin-top: 24px; }}
-    table {{ border-collapse: collapse; width: 340px; }}
-    td {{ padding: 5px 12px; border-bottom: 1px solid #21262d; }}
-    tr td:first-child {{ color: #8b949e; width: 140px; }}
-    tr td:last-child {{ color: #e6edf3; }}
-    pre {{
-      background: #161b22;
-      border: 1px solid #21262d;
-      border-radius: 6px;
-      padding: 16px;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      color: #3fb950;
-      max-height: 480px;
-      overflow-y: auto;
-      font-size: 12px;
-    }}
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117; color: #c9d1d9;
+      font-family: 'Courier New', monospace; font-size: 14px; padding: 24px;
+    }
+    h1 { color: #58a6ff; margin-bottom: 4px; font-size: 20px; }
+    .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 12px; }
+    h2 { color: #8b949e; font-size: 13px; text-transform: uppercase;
+         letter-spacing: 1px; margin-bottom: 8px; margin-top: 24px; }
+    table { border-collapse: collapse; width: 340px; }
+    td { padding: 5px 12px; border-bottom: 1px solid #21262d; }
+    tr td:first-child { color: #8b949e; width: 140px; }
+    tr td:last-child { color: #e6edf3; }
+    #log {
+      background: #161b22; border: 1px solid #21262d; border-radius: 6px;
+      padding: 16px; white-space: pre-wrap; color: #3fb950;
+      max-height: 480px; overflow-y: auto; font-size: 12px;
+    }
   </style>
-  <script>setTimeout(() => location.reload(), 30000);</script>
 </head>
 <body>
   <h1>Netatmo Hub</h1>
-  <div class="subtitle">Auto-refreshes every 30 s &nbsp;·&nbsp; {time.strftime("%H:%M:%S")}</div>
+  <div class="subtitle" id="ts">Loading…</div>
 
   <h2>Current weather</h2>
-  <table><tbody>{weather_rows}</tbody></table>
+  <table><tbody>""" + weather_rows + """</tbody></table>
 
   <h2>Log</h2>
-  <pre>{log_text}</pre>
+  <div id="log">Loading…</div>
+
+  <script>
+    function refresh() {
+      fetch('/log')
+        .then(r => r.text())
+        .then(t => {
+          const el = document.getElementById('log');
+          const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 4;
+          el.textContent = t;
+          if (atBottom) el.scrollTop = el.scrollHeight;
+        });
+      document.getElementById('ts').textContent =
+        'Live — last polled ' + new Date().toLocaleTimeString();
+    }
+    refresh();
+    setInterval(refresh, 10000);
+  </script>
 </body>
 </html>"""
     return Response(html, mimetype="text/html")
