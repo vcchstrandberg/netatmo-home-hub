@@ -1,0 +1,7 @@
+server/.env
+server/venv/
+server/__pycache__/
+*.pyc
+firmware/.pio/
+firmware/include/**/arduino_secrets.h
+.DS_Store

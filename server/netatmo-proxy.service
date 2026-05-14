@@ -1,0 +1,17 @@
+[Unit]
+Description=Netatmo Weather Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/netatmo-home-hub/server
+ExecStart=/home/pi/netatmo-home-hub/server/venv/bin/python netatmo_proxy.py
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
