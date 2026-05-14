@@ -162,7 +162,6 @@ def index():
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="30">
   <title>Netatmo Hub</title>
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -194,6 +193,7 @@ def index():
       font-size: 12px;
     }}
   </style>
+  <script>setTimeout(() => location.reload(), 30000);</script>
 </head>
 <body>
   <h1>Netatmo Hub</h1>
