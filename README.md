@@ -1,22 +1,53 @@
 # netatmo-home-hub
 
-A Raspberry Pi acts as a local hub: it handles all Netatmo OAuth, polls the weather API every 5 minutes, and serves the data over plain HTTP on your home network. Any number of devices can read from it — no Netatmo app registration needed per device.
+A Raspberry Pi acts as a local OAuth hub: it handles all Netatmo token management, polls the weather API every 5 minutes, and serves the latest data as a flat JSON over plain HTTP on your home network. Any number of display devices can read from it — one Netatmo app registration handles everything.
 
-**Why this exists:** Netatmo limits you to 2 registered apps. With this setup you need exactly one — the Pi proxy.
+**Why this exists:** Netatmo allows only 2 registered apps per account. With [`netatmo-weather-api`](https://github.com/vcchstrandberg/netatmo-weather-api), each device needs its own token pair and those tokens are shared. With netatmo-home-hub, the Pi holds the single set of credentials and every device gets the data over plain HTTP — no TLS, no tokens, no OAuth on any device.
+
+---
+
+## Supported boards
+
+| Environment | Board | MCU | Display | Fetch interval |
+|---|---|---|---|---|
+| `esp32cam` | AI-Thinker ESP32-CAM | Xtensa LX6, 240 MHz | SSD1306 128×64 OLED (GPIO14/15) | 5 min |
+| `esp32dev` | Generic ESP32 DevKit | Xtensa LX6, 240 MHz | SSD1306 128×64 OLED (GPIO21/22) | 5 min |
+| `uno_r4_wifi` | Arduino Uno R4 WiFi | Renesas RA4M1, 48 MHz | SSD1306 128×64 OLED (A4/A5) | 60 s |
+| `esp32c6_waveshare_lcd` | Waveshare ESP32-C6 Touch LCD 1.47 | ESP32-C6 RISC-V, 160 MHz | Integrated 320×172 IPS TFT | 5 min |
+
+All OLED boards use U8g2. The Waveshare uses LovyanGFX for its integrated TFT.
+
+---
+
+## Features
+
+- **Central OAuth hub** — the Pi holds the single Netatmo refresh token, refreshes it automatically, and writes the updated token back to `.env`; devices never see credentials
+- **Unlimited devices** — any device on the local network can call `GET http://<pi>:8080/weather` with no registration or tokens
+- **No TLS on devices** — plain HTTP to the Pi; the Pi uses HTTPS when talking to Netatmo
+- **Full-screen C6 dashboard** — the Waveshare ESP32-C6 shows all data simultaneously: thermometer graphics, rain intensity dots, indoor/outdoor panels side-by-side
+- **3-card cycling display** — OLED boards rotate indoor, outdoor, and rain cards every 5 s
+- **Multi-locale with unit conversion** — Svenska, English US, English UK, Français; °C↔°F, hPa↔inHg, mm↔in
+- **Runtime locale switching** — BOOT button on all ESP32 boards; D7 button on Uno R4
+- **Pi web UI** — `http://netatmo-hub.local:8080/` shows live weather and a scrolling log auto-updated every 10 s via JS fetch
+- **Systemd service** — auto-starts on Pi boot, restarts on failure, logs to journald
 
 ---
 
 ## Architecture
 
 ```
-Netatmo API  ←──(HTTPS, OAuth)──  Raspberry Pi proxy
-                                         │
-                            plain HTTP on local network
-                         ┌───────────────┼───────────────┐
-                    ESP32-CAM       ESP32 DevKit      Uno R4 WiFi   ...
+Netatmo Cloud API ←─── HTTPS / OAuth2 ───► Raspberry Pi (netatmo-hub.local:8080)
+(api.netatmo.com)                                │
+                                    plain HTTP · local network
+                         ┌──────────────────┼──────────────────┐
+                   ESP32-CAM          ESP32 DevKit         Uno R4 WiFi
+                   (OLED)             (OLED)               (OLED)
+                                           │
+                                  Waveshare ESP32-C6
+                                  (integrated TFT)
 ```
 
-Devices call `GET http://<pi-ip>:8080/weather` and receive a flat JSON response. No TLS, no tokens, no credentials on the devices.
+See [docs/architecture.md](docs/architecture.md) for detailed Mermaid diagrams.
 
 ---
 
@@ -24,71 +55,76 @@ Devices call `GET http://<pi-ip>:8080/weather` and receive a flat JSON response.
 
 ```
 netatmo-home-hub/
-├── server/                  ← Runs on the Raspberry Pi
-│   ├── netatmo_proxy.py     ← Flask proxy server
+├── server/                              ← Runs on the Raspberry Pi
+│   ├── netatmo_proxy.py                 ← Flask proxy + web UI
 │   ├── requirements.txt
-│   ├── config.example.env   ← Copy to .env and fill in credentials
-│   ├── netatmo-proxy.service← systemd unit
-│   └── setup.sh             ← One-shot setup script
-├── firmware/                ← PlatformIO project for display devices
+│   ├── config.example.env               ← Copy to .env and fill in credentials
+│   ├── netatmo-proxy.service            ← systemd unit
+│   └── setup.sh                         ← One-shot install script
+├── firmware/                            ← PlatformIO project for display devices
 │   ├── platformio.ini
-│   ├── src/main.cpp
+│   ├── src/main.cpp                     ← Single source file, all boards
+│   ├── scripts/version.py               ← Injects git commit hash at build time
 │   └── include/
-│       ├── esp32cam/        → arduino_secrets.h.example
-│       ├── esp32dev/        → arduino_secrets.h.example
-│       ├── uno_r4_wifi/     → arduino_secrets.h.example
-│       └── esp32c6_waveshare_lcd/ → arduino_secrets.h.example
+│       ├── esp32cam/                    ← arduino_secrets.h (gitignored)
+│       ├── esp32dev/                    ← arduino_secrets.h (gitignored)
+│       ├── uno_r4_wifi/                 ← arduino_secrets.h (gitignored)
+│       └── esp32c6_waveshare_lcd/       ← arduino_secrets.h + LGFX_config.h
 └── docs/
-    ├── raspberry-pi-setup.md← Step-by-step Pi setup
-    └── wiring.md            ← Display wiring reference
+    ├── architecture.md                  ← System overview and Mermaid diagrams
+    ├── configuration.md                 ← Credentials, build, flash
+    ├── display-layout.md                ← Display card designs (OLED + TFT)
+    ├── raspberry-pi-setup.md            ← Step-by-step Pi setup
+    ├── server.md                        ← Proxy API reference and web UI
+    ├── wiring.md                        ← Pin connections for all boards
+    └── revision-history.md              ← Version log
 ```
 
 ---
 
 ## Quick start
 
-### 1. Set up the Pi
+### 1. Set up the Raspberry Pi
 
 Follow **[docs/raspberry-pi-setup.md](docs/raspberry-pi-setup.md)** — covers OS flashing, SSH, credentials, and the systemd service.
+
+After setup, the Pi exposes four routes:
+
+| Route | Description |
+|---|---|
+| `GET /weather` | Flat JSON — all weather fields |
+| `GET /health` | `{"ok": true, "has_data": true}` |
+| `GET /log` | Plain-text rolling log (for JS polling) |
+| `GET /` | Web UI — weather table + live log |
 
 ### 2. Flash a device
 
 ```bash
 cd firmware
 
-# Copy and edit the secrets file for your board (ESP32-CAM shown here):
+# Copy the example secrets file for your board (ESP32-CAM shown):
 cp include/esp32cam/arduino_secrets.h.example include/esp32cam/arduino_secrets.h
 ```
 
-Edit `arduino_secrets.h` — only four values needed:
+Edit the secrets file — four values only:
 
 ```cpp
 #define SECRET_SSID  "your-wifi-ssid"
 #define SECRET_PASS  "your-wifi-password"
-#define PROXY_HOST   "192.168.1.x"   // Pi's IP address
+#define PROXY_HOST   "netatmo-hub.local"   // or Pi's IP address
 #define PROXY_PORT   8080
 ```
 
-Then build and upload:
+Build and upload:
 
 ```bash
-pio run -e esp32cam --target upload
+pio run -e esp32cam               --target upload
+pio run -e esp32dev               --target upload
+pio run -e uno_r4_wifi            --target upload
+pio run -e esp32c6_waveshare_lcd  --target upload
 ```
 
-Supported environments:
-
-| Environment | Board | Display |
-|---|---|---|
-| `esp32cam` | AI-Thinker ESP32-CAM | SSD1306 OLED (GPIO14/15) |
-| `esp32dev` | Generic ESP32 DevKit | SSD1306 OLED (GPIO21/22) |
-| `uno_r4_wifi` | Arduino Uno R4 WiFi | SSD1306 OLED (A4/A5) |
-| `esp32c6_waveshare_lcd` | Waveshare ESP32-C6 Touch LCD 1.47 | Integrated TFT |
-
-See **[docs/wiring.md](docs/wiring.md)** for display wiring details.
-
-> **Note:** `arduino_secrets.h` is listed in `.gitignore` and will never be committed.
-
-### 3. Proxy response format
+### 3. Proxy JSON response format
 
 ```json
 {
@@ -104,16 +140,30 @@ See **[docs/wiring.md](docs/wiring.md)** for display wiring details.
 }
 ```
 
+`updated_at` is a Unix timestamp of the last successful Netatmo poll.
+
+---
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — system overview, proxy internals, boot sequence, main loop, data flow
+- [Configuration](docs/configuration.md) — credentials, building, flashing, serial monitor
+- [Display layout](docs/display-layout.md) — OLED card designs and C6 full dashboard
+- [Raspberry Pi setup](docs/raspberry-pi-setup.md) — OS flashing, SSH, systemd service
+- [Server reference](docs/server.md) — proxy routes, token refresh, web UI
+- [Wiring](docs/wiring.md) — pin connections for all boards
+- [Revision history](docs/revision-history.md) — version log
+
 ---
 
 ## Compared to netatmo-weather-api
 
 | | [netatmo-weather-api](https://github.com/vcchstrandberg/netatmo-weather-api) | netatmo-home-hub |
 |---|---|---|
-| Works without a Pi | Yes | No |
-| Devices per Netatmo app | 1 | Unlimited |
+| Raspberry Pi required | No | Yes |
+| Devices per Netatmo app | 1 (tokens shared per device) | Unlimited |
 | TLS on devices | Yes | No |
-| Credentials on devices | Yes (tokens) | No |
-| Token refresh | On-device | Pi only |
-
-Use `netatmo-weather-api` if you want a fully standalone device. Use this repo if you have several devices and a Pi to dedicate as a hub.
+| Credentials on devices | Yes (client ID/secret + tokens) | No |
+| Token refresh | On-device, NVS flash | Pi only, `.env` file |
+| Offline resilience | Device fetches directly | Pi must be reachable |
+| Best for | Single device, no Pi | Multiple devices, Pi available |
