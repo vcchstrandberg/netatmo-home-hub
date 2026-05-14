@@ -131,7 +131,9 @@ def health():
 def log_feed():
     with _lock:
         text = "\n".join(_log_buffer) or "(no log entries yet)"
-    return Response(text, mimetype="text/plain")
+    resp = Response(text, mimetype="text/plain")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
 
 
 @app.route("/")
@@ -199,16 +201,19 @@ def index():
 
   <script>
     function refresh() {
-      fetch('/log')
+      fetch('/log?t=' + Date.now())
         .then(r => r.text())
         .then(t => {
           const el = document.getElementById('log');
           const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 4;
           el.textContent = t;
           if (atBottom) el.scrollTop = el.scrollHeight;
+          document.getElementById('ts').textContent =
+            'Live — last updated ' + new Date().toLocaleTimeString();
+        })
+        .catch(e => {
+          document.getElementById('ts').textContent = 'Fetch error: ' + e;
         });
-      document.getElementById('ts').textContent =
-        'Live — last polled ' + new Date().toLocaleTimeString();
     }
     refresh();
     setInterval(refresh, 10000);
