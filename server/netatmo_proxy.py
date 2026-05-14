@@ -90,8 +90,8 @@ def _fetch():
             "indoor_humidity": indoor.get("Humidity", 0),
             "pressure":        indoor.get("Pressure", 0),
             "outdoor_temp":    outdoor.get("Temperature", 0),
-            "rain_1h":         rain.get("sum_rain_1", 0),
-            "rain_24h":        rain.get("sum_rain_24", 0),
+            "rain_1h":         round(rain.get("sum_rain_1", 0), 1),
+            "rain_24h":        round(rain.get("sum_rain_24", 0), 1),
             "is_raining":      rain.get("Rain", 0) > 0,
             "updated_at":      int(time.time()),
         }
