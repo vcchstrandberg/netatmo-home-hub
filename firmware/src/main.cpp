@@ -135,11 +135,15 @@ String g_city           = "";
 uint8_t       g_card           = 0;
 unsigned long g_lastCardSwitch = 0;
 unsigned long g_lastFetch      = 0;
+#ifdef WAVESHARE_ESP32C6_LCD
+const unsigned long CARD_MS  = 86400000UL; // effectively never — full dashboard always shown
+const unsigned long FETCH_MS = 300000;
+#elif defined(ESP32)
 const unsigned long CARD_MS  = 5000;
-#ifdef ESP32
-const unsigned long FETCH_MS = 300000;  // 5 min — matches proxy poll interval
+const unsigned long FETCH_MS = 300000;
 #else
-const unsigned long FETCH_MS = 60000;   // 1 min — proxy returns cached data, cheap
+const unsigned long CARD_MS  = 5000;
+const unsigned long FETCH_MS = 60000;
 #endif
 
 // ── Forward declarations ──────────────────────────────────────────────────────
@@ -394,65 +398,145 @@ void showError(const char* title, const char* detail)
 }
 
 // ── drawCard() ────────────────────────────────────────────────────────────────
-// Card 0: indoor temp + humidity
-// Card 1: outdoor temp + pressure  (city name as title if known)
-// Card 2: rain 1h + 24h
+// OLED boards: Card 0 = indoor, Card 1 = outdoor, Card 2 = rain (cycled)
+// C6 TFT:      Full dashboard always — all data on screen simultaneously
 
 #ifdef WAVESHARE_ESP32C6_LCD
-void drawCard(uint8_t card)
+
+// Thermometer drawn with primitives inside a temp panel.
+// panelX = 0 for indoor, 160 for outdoor.
+static void drawThermometer(int panelX, float tempC)
 {
+  uint16_t col;
+  if      (tempC <  0) col = 0x001F; // blue
+  else if (tempC < 10) col = 0x07FF; // cyan
+  else if (tempC < 20) col = 0x07E0; // green
+  else if (tempC < 30) col = 0xFFE0; // yellow
+  else                 col = 0xF800; // red
+
+  int tx = panelX + 6;
+  int ty = 46;
+  int tw = 8;
+  int th = 44;
+  int br = 7;
+
+  float pct   = (tempC + 20.0f) / 60.0f;
+  if (pct < 0) pct = 0; if (pct > 1) pct = 1;
+  int fillH = max(2, (int)(th * pct));
+
+  tft.fillCircle(tx + tw / 2, ty + th + br, br, col);
+  tft.drawCircle(tx + tw / 2, ty + th + br, br, 0x8410);
+  tft.fillRoundRect(tx + 1, ty + th - fillH, tw - 2, fillH, 2, col);
+  tft.drawRoundRect(tx, ty, tw, th, 3, 0x8410);
+}
+
+// Rain intensity dots: 0–3 filled circles based on mm amount.
+static void drawRainDots(int x, int y, float mm)
+{
+  int count = (mm <= 0) ? 0 : (mm < 1) ? 1 : (mm < 5) ? 2 : 3;
+  uint16_t col = (mm < 1) ? 0x9FFF : (mm < 5) ? 0x065F : 0x001F;
+  for (int i = 0; i < count; i++)
+    tft.fillCircle(x + i * 11, y, 4, col);
+}
+
+void drawCard(uint8_t)  // card argument unused — full dashboard always shown
+{
+  const uint16_t HDR_COL  = 0x0329;  // dark teal header
+  const uint16_t DIV_COL  = 0x4208;  // dark gray dividers
+  const uint16_t RAIN_COL = 0x03DF;  // teal rain bar
+  const int      SPLIT    = 160;     // vertical panel split x
+  const int      HDR_H    = 24;      // header height
+  const int      RAIN_Y   = 140;     // rain bar top y
+
   tft.fillScreen(TFT_BLACK);
-  uint16_t hdrColor = CARD_COLOR[card];
-  tft.fillRect(0, 0, tft.width(), 28, hdrColor);
 
-  tft.setTextDatum(TL_DATUM);
+  // ── Header ────────────────────────────────────────────────────────────────
+  tft.fillRect(0, 0, 320, HDR_H, HDR_COL);
   tft.setTextFont(2);
-  tft.setTextColor(TFT_WHITE, hdrColor);
-  const char* title = (card == 0) ? g_loc->indoor
-                    : (card == 1) ? (g_city.length() > 0 ? g_city.c_str() : g_loc->outdoor)
-                    :               g_loc->rain;
-  tft.drawString(title, 4, 6);
+  tft.setTextColor(TFT_WHITE, HDR_COL);
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString(g_city.length() > 0 ? g_city.c_str() : "-", 6, 4);
   tft.setTextDatum(TR_DATUM);
-  tft.drawString(g_loc->code, tft.width() - 4, 6);
+  tft.drawString(g_loc->code, 314, 4);
   tft.setTextDatum(TL_DATUM);
 
-  switch (card) {
-    case 0:
-    case 1: {
-      float  temp    = (card == 0) ? g_indoorTemp : g_outdoorTemp;
-      String numStr  = String(toDisplayTemp(temp), 1);
-      String unitStr = String(g_loc->temp_unit);
-      tft.setTextFont(6);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.drawString(numStr, 10, 38);
-      int numW = tft.textWidth(numStr);
-      tft.setTextFont(4);
-      tft.drawString(unitStr, 14 + numW, 50);
-      tft.setTextFont(2);
-      tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-      if (card == 0)
-        tft.drawString(String(g_loc->humidity) + String(g_indoorHumidity) + "%", 10, 140);
-      else
-        tft.drawString(String(g_loc->pressure) +
-                       String(toDisplayPressure(g_airPressure), (unsigned int)g_loc->pressure_decimals) +
-                       g_loc->pressure_unit, 10, 140);
-      break;
-    }
-    case 2: {
-      if (g_isRaining) {
-        tft.setTextDatum(TR_DATUM);
-        tft.setTextFont(4);
-        tft.setTextColor(TFT_WHITE, hdrColor);
-        tft.drawString("*", tft.width() - tft.textWidth(g_loc->code) - 20, 3);
-        tft.setTextDatum(TL_DATUM);
-      }
-      tft.setTextFont(4);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.drawString("1h:  " + String(toDisplayRain(g_rain1h),  (unsigned int)g_loc->rain_decimals) + " " + g_loc->rain_unit, 10, 48);
-      tft.drawString("24h: " + String(toDisplayRain(g_rain24h), (unsigned int)g_loc->rain_decimals) + " " + g_loc->rain_unit, 10, 108);
-      break;
-    }
+  // ── Panel dividers ────────────────────────────────────────────────────────
+  tft.drawFastVLine(SPLIT, HDR_H, RAIN_Y - HDR_H, DIV_COL);
+  tft.drawFastHLine(0, RAIN_Y, 320, DIV_COL);
+
+  // ── Indoor panel ──────────────────────────────────────────────────────────
+  tft.setTextFont(2);
+  tft.setTextColor(0xFB60, TFT_BLACK);  // amber label
+  tft.drawString(g_loc->indoor, 22, 28);
+
+  drawThermometer(0, g_loc->fahrenheit ? (g_indoorTemp - 32.0f) * 5.0f / 9.0f : g_indoorTemp);
+
+  {
+    String numStr = String(toDisplayTemp(g_indoorTemp), 1);
+    tft.setTextFont(6);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(numStr, 22, 50);
+    int nw = tft.textWidth(numStr);
+    tft.setTextFont(4);
+    tft.drawString(g_loc->temp_unit, 24 + nw, 62);
   }
+
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  tft.drawString(String(g_loc->humidity) + String(g_indoorHumidity) + "%", 6, 115);
+
+  // ── Outdoor panel ─────────────────────────────────────────────────────────
+  tft.setTextFont(2);
+  tft.setTextColor(0x235F, TFT_BLACK);  // sky blue label
+  tft.drawString(g_loc->outdoor, 182, 28);
+
+  drawThermometer(SPLIT, g_loc->fahrenheit ? (g_outdoorTemp - 32.0f) * 5.0f / 9.0f : g_outdoorTemp);
+
+  {
+    String numStr = String(toDisplayTemp(g_outdoorTemp), 1);
+    tft.setTextFont(6);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(numStr, 182, 50);
+    int nw = tft.textWidth(numStr);
+    tft.setTextFont(4);
+    tft.drawString(g_loc->temp_unit, 184 + nw, 62);
+  }
+
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  tft.drawString(String(g_loc->pressure) +
+                 String(toDisplayPressure(g_airPressure), (unsigned int)g_loc->pressure_decimals) +
+                 g_loc->pressure_unit, 166, 115);
+
+  // ── Rain bar ─────────────────────────────────────────────────────────────
+  tft.fillRect(0, RAIN_Y + 1, 320, 31, RAIN_COL);
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_WHITE, RAIN_COL);
+
+  int leftX = 8;
+  if (g_isRaining) {
+    tft.fillCircle(leftX + 4, RAIN_Y + 16, 5, TFT_WHITE);
+    leftX += 16;
+  }
+
+  // Left: label + 1h value + dots
+  tft.setTextDatum(TL_DATUM);
+  String s1h = String(g_loc->rain) + "  1h: " +
+               String(toDisplayRain(g_rain1h), (unsigned int)g_loc->rain_decimals) +
+               " " + g_loc->rain_unit;
+  tft.drawString(s1h, leftX, RAIN_Y + 8);
+  int dotsX = leftX + tft.textWidth(s1h) + 4;
+  drawRainDots(dotsX, RAIN_Y + 16, g_rain1h);
+
+  // Right: 24h value + dots (right-aligned, dots left of text)
+  String s24h = "24h: " +
+                String(toDisplayRain(g_rain24h), (unsigned int)g_loc->rain_decimals) +
+                " " + g_loc->rain_unit;
+  tft.setTextDatum(TR_DATUM);
+  tft.drawString(s24h, 312, RAIN_Y + 8);
+  int dots24X = 312 - tft.textWidth(s24h) - 4 - 3 * 11;
+  drawRainDots(dots24X, RAIN_Y + 16, g_rain24h);
+  tft.setTextDatum(TL_DATUM);
 }
 
 #elif !defined(NO_DISPLAY)

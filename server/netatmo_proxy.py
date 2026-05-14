@@ -5,32 +5,43 @@ Netatmo local proxy — runs on a Raspberry Pi.
 Refreshes Netatmo tokens automatically, polls the API every 5 minutes,
 and serves the latest weather data as a flat JSON on GET /weather.
 Devices on the local network call this instead of Netatmo directly.
+
+Web UI: http://netatmo-hub.local:8080/  — current weather + live log
 """
 import os
 import time
 import threading
+from collections import deque
+from datetime import datetime
 
 import requests
 from dotenv import load_dotenv, set_key
-from flask import Flask, jsonify, abort
+from flask import Flask, jsonify, abort, Response
 
 load_dotenv()
 
 CLIENT_ID     = os.environ["NETATMO_CLIENT_ID"]
 CLIENT_SECRET = os.environ["NETATMO_CLIENT_SECRET"]
 
-TOKEN_URL = "https://api.netatmo.com/oauth2/token"
-DATA_URL  = "https://api.netatmo.com/api/getstationsdata"
-POLL_SECS = 300   # match Netatmo station update interval
-ENV_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+TOKEN_URL  = "https://api.netatmo.com/oauth2/token"
+DATA_URL   = "https://api.netatmo.com/api/getstationsdata"
+POLL_SECS  = 300
+ENV_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
 _lock          = threading.Lock()
 _access_token  = None
 _refresh_token = os.environ["NETATMO_REFRESH_TOKEN"]
 _token_expiry  = 0.0
 _weather       = None
+_log_buffer    = deque(maxlen=500)
 
 app = Flask(__name__)
+
+
+def _log(msg: str):
+    entry = f"[{_ts()}] {msg}"
+    print(entry, flush=True)
+    _log_buffer.append(entry)
 
 
 def _refresh_token_fn():
@@ -47,7 +58,7 @@ def _refresh_token_fn():
     _refresh_token = data["refresh_token"]
     _token_expiry  = time.time() + data["expires_in"] - 60
     set_key(ENV_FILE, "NETATMO_REFRESH_TOKEN", _refresh_token)
-    print(f"[{_ts()}] Token refreshed, expires in {data['expires_in']}s", flush=True)
+    _log(f"Token refreshed, expires in {data['expires_in']}s")
 
 
 def _fetch():
@@ -84,7 +95,7 @@ def _fetch():
             "is_raining":      rain.get("Rain", 0) > 0,
             "updated_at":      int(time.time()),
         }
-    print(f"[{_ts()}] Updated — {city} in={indoor.get('Temperature')}°  out={outdoor.get('Temperature')}°", flush=True)
+    _log(f"Updated — {city}  in={indoor.get('Temperature')}°  out={outdoor.get('Temperature')}°")
 
 
 def _poll_loop():
@@ -93,12 +104,14 @@ def _poll_loop():
         try:
             _fetch()
         except Exception as e:
-            print(f"[{_ts()}] Fetch error: {e}", flush=True)
+            _log(f"Fetch error: {e}")
 
 
 def _ts():
     return time.strftime("%H:%M:%S")
 
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/weather")
 def weather():
@@ -114,16 +127,100 @@ def health():
         return jsonify({"ok": True, "has_data": _weather is not None})
 
 
+@app.route("/")
+def index():
+    with _lock:
+        w = dict(_weather) if _weather else None
+        logs = list(_log_buffer)
+
+    updated = ""
+    if w and w.get("updated_at"):
+        updated = datetime.fromtimestamp(w["updated_at"]).strftime("%Y-%m-%d %H:%M:%S")
+
+    weather_rows = ""
+    if w:
+        rows = [
+            ("City",             w.get("city", "—")),
+            ("Indoor temp",      f"{w['indoor_temp']} °C"),
+            ("Indoor humidity",  f"{w['indoor_humidity']} %"),
+            ("Pressure",         f"{w['pressure']} hPa"),
+            ("Outdoor temp",     f"{w['outdoor_temp']} °C"),
+            ("Rain 1h",          f"{w['rain_1h']} mm"),
+            ("Rain 24h",         f"{w['rain_24h']} mm"),
+            ("Raining now",      "yes" if w["is_raining"] else "no"),
+            ("Last updated",     updated),
+        ]
+        weather_rows = "\n".join(
+            f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in rows
+        )
+    else:
+        weather_rows = "<tr><td colspan='2'>No data yet</td></tr>"
+
+    log_text = "\n".join(logs[-200:]) or "(no log entries yet)"
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="30">
+  <title>Netatmo Hub</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      padding: 24px;
+    }}
+    h1 {{ color: #58a6ff; margin-bottom: 4px; font-size: 20px; }}
+    .subtitle {{ color: #8b949e; margin-bottom: 24px; font-size: 12px; }}
+    h2 {{ color: #8b949e; font-size: 13px; text-transform: uppercase;
+          letter-spacing: 1px; margin-bottom: 8px; margin-top: 24px; }}
+    table {{ border-collapse: collapse; width: 340px; }}
+    td {{ padding: 5px 12px; border-bottom: 1px solid #21262d; }}
+    tr td:first-child {{ color: #8b949e; width: 140px; }}
+    tr td:last-child {{ color: #e6edf3; }}
+    pre {{
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 6px;
+      padding: 16px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      color: #3fb950;
+      max-height: 480px;
+      overflow-y: auto;
+      font-size: 12px;
+    }}
+  </style>
+</head>
+<body>
+  <h1>Netatmo Hub</h1>
+  <div class="subtitle">Auto-refreshes every 30 s &nbsp;·&nbsp; {time.strftime("%H:%M:%S")}</div>
+
+  <h2>Current weather</h2>
+  <table><tbody>{weather_rows}</tbody></table>
+
+  <h2>Log</h2>
+  <pre>{log_text}</pre>
+</body>
+</html>"""
+    return Response(html, mimetype="text/html")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    print("Netatmo proxy starting...", flush=True)
+    _log("Netatmo proxy starting...")
     try:
         _fetch()
     except Exception as e:
-        print(f"Initial fetch failed: {e}", flush=True)
+        _log(f"Initial fetch failed: {e}")
 
     t = threading.Thread(target=_poll_loop, daemon=True)
     t.start()
 
     port = int(os.environ.get("PORT", 8080))
-    print(f"Listening on 0.0.0.0:{port}", flush=True)
+    _log(f"Listening on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)
