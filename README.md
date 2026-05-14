@@ -56,22 +56,37 @@ Follow **[docs/raspberry-pi-setup.md](docs/raspberry-pi-setup.md)** — covers O
 ```bash
 cd firmware
 
-# Copy and edit secrets for your board:
+# Copy and edit the secrets file for your board (ESP32-CAM shown here):
 cp include/esp32cam/arduino_secrets.h.example include/esp32cam/arduino_secrets.h
-nano include/esp32cam/arduino_secrets.h   # set SSID, PASS, PROXY_HOST
+```
 
-# Build and upload:
+Edit `arduino_secrets.h` — only four values needed:
+
+```cpp
+#define SECRET_SSID  "your-wifi-ssid"
+#define SECRET_PASS  "your-wifi-password"
+#define PROXY_HOST   "192.168.1.x"   // Pi's IP address
+#define PROXY_PORT   8080
+```
+
+Then build and upload:
+
+```bash
 pio run -e esp32cam --target upload
 ```
 
 Supported environments:
 
-| Environment | Board |
-|---|---|
-| `esp32cam` | AI-Thinker ESP32-CAM + SSD1306 OLED |
-| `esp32dev` | Generic ESP32 DevKit + SSD1306 OLED |
-| `uno_r4_wifi` | Arduino Uno R4 WiFi + SSD1306 OLED |
-| `esp32c6_waveshare_lcd` | Waveshare ESP32-C6 Touch LCD 1.47 |
+| Environment | Board | Display |
+|---|---|---|
+| `esp32cam` | AI-Thinker ESP32-CAM | SSD1306 OLED (GPIO14/15) |
+| `esp32dev` | Generic ESP32 DevKit | SSD1306 OLED (GPIO21/22) |
+| `uno_r4_wifi` | Arduino Uno R4 WiFi | SSD1306 OLED (A4/A5) |
+| `esp32c6_waveshare_lcd` | Waveshare ESP32-C6 Touch LCD 1.47 | Integrated TFT |
+
+See **[docs/wiring.md](docs/wiring.md)** for display wiring details.
+
+> **Note:** `arduino_secrets.h` is listed in `.gitignore` and will never be committed.
 
 ### 3. Proxy response format
 
@@ -93,7 +108,7 @@ Supported environments:
 
 ## Compared to netatmo-weather-api
 
-| | [netatmo-weather-api](https://github.com/your-username/netatmo-weather-api) | netatmo-home-hub |
+| | [netatmo-weather-api](https://github.com/vcchstrandberg/netatmo-weather-api) | netatmo-home-hub |
 |---|---|---|
 | Works without a Pi | Yes | No |
 | Devices per Netatmo app | 1 | Unlimited |

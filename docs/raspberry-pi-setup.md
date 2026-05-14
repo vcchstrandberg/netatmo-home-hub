@@ -56,7 +56,7 @@ In the **OS Customisation** dialog:
 
 ```bash
 sudo apt-get install -y git
-git clone https://github.com/your-username/netatmo-home-hub.git
+git clone https://github.com/vcchstrandberg/netatmo-home-hub.git
 cd netatmo-home-hub/server
 ```
 
@@ -74,18 +74,20 @@ nano .env
 Your `.env` should look like:
 
 ```
-NETATMO_CLIENT_ID=69fecd523ef3006f2e08ed09
-NETATMO_CLIENT_SECRET=o1FoNBWPTo4EUryW6HUgd6hqYBEGaIhzI
-NETATMO_REFRESH_TOKEN=670f3ef5bee92e28d804ba8e|462ca295a309b616f792b3484ea48c93
+NETATMO_CLIENT_ID=your-client-id
+NETATMO_CLIENT_SECRET=your-client-secret
+NETATMO_REFRESH_TOKEN=your-refresh-token
 PORT=8080
 ```
 
 **Where to find your credentials:**
 
-- `CLIENT_ID` and `CLIENT_SECRET` — from the [Netatmo developer portal](https://dev.netatmo.com/apps/)
-- `REFRESH_TOKEN` — copy it from the `arduino_secrets.h` of one of your existing devices (in the `netatmo-weather-api` repo), or from the Netatmo app's OAuth flow
+- `CLIENT_ID` and `CLIENT_SECRET` — from the [Netatmo developer portal](https://dev.netatmo.com/apps/). Create one app, give it any name.
+- `REFRESH_TOKEN` — the easiest source is `arduino_secrets.h` from an existing device in the `netatmo-weather-api` repo. If you don't have one, obtain it via the Netatmo OAuth2 flow in the developer portal (use the "Token generator" on your app page).
 
 > The proxy automatically writes the updated refresh token back to `.env` each time it refreshes. You only need to paste the initial token once.
+
+> **Security:** `.env` is listed in `.gitignore` and will never be committed to the repo.
 
 ---
 
@@ -159,8 +161,44 @@ Put this IP in `PROXY_HOST` in your device `arduino_secrets.h`.
 ## Useful commands
 
 ```bash
-sudo systemctl restart netatmo-proxy   # restart after config changes
-sudo systemctl stop netatmo-proxy      # stop
-sudo journalctl -u netatmo-proxy -f    # live log
+sudo systemctl restart netatmo-proxy       # restart after config changes
+sudo systemctl stop netatmo-proxy          # stop
+sudo journalctl -u netatmo-proxy -f        # live log
+curl http://netatmo-hub.local:8080/weather # full weather response
 curl http://netatmo-hub.local:8080/health  # quick health check
 ```
+
+---
+
+## Give the Pi a static IP
+
+Assign a reserved IP in your router's DHCP settings (look for "DHCP reservation" or "static lease") using the Pi's MAC address. This ensures `PROXY_HOST` in your device `arduino_secrets.h` never needs updating.
+
+To find the Pi's MAC address:
+
+```bash
+ip link show wlan0
+```
+
+Look for the `link/ether` line, e.g. `b8:27:eb:xx:xx:xx`.
+
+---
+
+## Troubleshooting
+
+**Service fails to start**
+```bash
+sudo journalctl -u netatmo-proxy -n 50
+```
+Most common cause: wrong credentials in `.env`. Double-check `NETATMO_CLIENT_ID`, `NETATMO_CLIENT_SECRET`, and `NETATMO_REFRESH_TOKEN`.
+
+**Token refresh fails (`401 Unauthorized`)**  
+The refresh token has expired (this happens if no client has refreshed it for a long time). Generate a new one from the [Netatmo developer portal](https://dev.netatmo.com/apps/) and paste it into `.env`, then restart the service.
+
+**Device can't reach the proxy**  
+- Verify the Pi is on: `ping netatmo-hub.local`
+- Verify the service is running: `curl http://netatmo-hub.local:8080/health`
+- Check `PROXY_HOST` in the device's `arduino_secrets.h` matches the Pi's actual IP
+
+**mDNS (`netatmo-hub.local`) not resolving**  
+Use the Pi's IP address directly instead. Find it with `ip addr show wlan0 | grep "inet "` on the Pi.
