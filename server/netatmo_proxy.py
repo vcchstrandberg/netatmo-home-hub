@@ -16,7 +16,7 @@ from datetime import datetime
 
 import requests
 from dotenv import load_dotenv, set_key
-from flask import Flask, jsonify, abort, Response
+from flask import Flask, jsonify, abort, Response, request
 
 load_dotenv()
 
@@ -112,6 +112,12 @@ def _ts():
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.after_request
+def _log_request(response):
+    if not request.path.startswith("/log"):
+        _log(f"HTTP {request.method} {request.path} → {response.status_code}")
+    return response
 
 @app.route("/weather")
 def weather():
