@@ -311,6 +311,7 @@ void fetchWeatherData()
   String url = String("http://") + PROXY_HOST + ":" + String(PROXY_PORT) + "/weather";
   http.begin(url);
   http.setTimeout(5000);
+  http.addHeader("X-Device-Name", DEVICE_NAME);
   int code = http.GET();
   if (code != 200) {
     Serial.printf("Proxy HTTP %d\n", code);
@@ -334,7 +335,7 @@ void fetchWeatherData()
   }
   client.print("GET /weather HTTP/1.0\r\nHost: ");
   client.print(PROXY_HOST);
-  client.print("\r\nConnection: close\r\n\r\n");
+  client.print("\r\nX-Device-Name: " DEVICE_NAME "\r\nConnection: close\r\n\r\n");
 
   unsigned long t = millis() + 5000;
   while (!client.available() && millis() < t) delay(10);

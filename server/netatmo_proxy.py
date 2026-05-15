@@ -139,13 +139,14 @@ def _ago(ts: float) -> str:
 def _log_request(response):
     ip = request.remote_addr
     if request.path == "/weather":
+        name = (request.headers.get("X-Device-Name")
+                or _device_names.get(ip)
+                or ip)
         with _lock:
             if ip not in _devices:
-                _devices[ip] = {
-                    "name":      _device_names.get(ip, ip),
-                    "last_seen": 0.0,
-                    "count":     0,
-                }
+                _devices[ip] = {"name": name, "last_seen": 0.0, "count": 0}
+            else:
+                _devices[ip]["name"] = name  # update in case firmware was reflashed
             _devices[ip]["last_seen"] = time.time()
             _devices[ip]["count"]    += 1
     if not request.path.startswith("/log") and not request.path.startswith("/devices"):
