@@ -11,7 +11,8 @@ netatmo-home-hub/
 │   ├── requirements.txt
 │   ├── config.example.env           ← copy to .env and fill in
 │   ├── netatmo-proxy.service
-│   └── setup.sh
+│   ├── setup.sh
+│   └── update.sh                    ← auto-deploy cron script
 ├── firmware/
 │   ├── platformio.ini
 │   ├── src/main.cpp
@@ -69,7 +70,7 @@ Create the secrets file for your board in its include directory:
 | Arduino Uno R4 WiFi | `include/uno_r4_wifi/arduino_secrets.h` |
 | Waveshare ESP32-C6 | `include/esp32c6_waveshare_lcd/arduino_secrets.h` |
 
-All four files use the same format — four values only:
+All four files use the same format — five values:
 
 ```cpp
 #pragma once
@@ -78,9 +79,12 @@ All four files use the same format — four values only:
 #define SECRET_PASS  "your-wifi-password"
 #define PROXY_HOST   "netatmo-hub.local"   // or Pi's IP address
 #define PROXY_PORT   8080
+#define DEVICE_NAME  "my-device"           // shown on the hub status page
 ```
 
 `PROXY_HOST` can be either the mDNS hostname (`netatmo-hub.local`) or the Pi's IP address. If mDNS is unreliable on your network, use the IP address and assign a static DHCP lease for the Pi in your router — see [raspberry-pi-setup.md](raspberry-pi-setup.md).
+
+`DEVICE_NAME` is sent as the `X-Device-Name` HTTP header on every `/weather` request. The hub uses it to label each device on the status page. If you reflash with a new name, the hub picks it up immediately on the next poll — no server config needed.
 
 ---
 

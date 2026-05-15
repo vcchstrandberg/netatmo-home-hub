@@ -21,14 +21,23 @@ All OLED boards use U8g2. The Waveshare uses LovyanGFX for its integrated TFT.
 
 ## Features
 
-- **Central OAuth hub** — the Pi holds the single Netatmo refresh token, refreshes it automatically, and writes the updated token back to `.env`; devices never see credentials
+### Firmware
+- **Central OAuth hub** — the Pi holds the single Netatmo refresh token and rotates it automatically; devices carry no credentials
 - **Unlimited devices** — any device on the local network can call `GET http://<pi>:8080/weather` with no registration or tokens
-- **No TLS on devices** — plain HTTP to the Pi; the Pi uses HTTPS when talking to Netatmo
-- **Full-screen C6 dashboard** — the Waveshare ESP32-C6 shows all data simultaneously: thermometer graphics, rain intensity dots, indoor/outdoor panels side-by-side
+- **No TLS on devices** — plain HTTP to the Pi; the Pi uses HTTPS to talk to Netatmo
+- **Full-screen C6 dashboard** — Waveshare ESP32-C6 shows all data simultaneously: thermometer graphics (colour-coded by temperature), rain intensity dots, indoor/outdoor panels, rain bar
 - **3-card cycling display** — OLED boards rotate indoor, outdoor, and rain cards every 5 s
 - **Multi-locale with unit conversion** — Svenska, English US, English UK, Français; °C↔°F, hPa↔inHg, mm↔in
-- **Runtime locale switching** — BOOT button on all ESP32 boards; D7 button on Uno R4
-- **Pi web UI** — `http://netatmo-hub.local:8080/` shows live weather and a scrolling log auto-updated every 10 s via JS fetch
+- **Runtime locale switching** — BOOT button on all ESP32 boards; D7 button on Uno R4; no reflash needed
+- **Device naming** — set `DEVICE_NAME` in `arduino_secrets.h`; sent as `X-Device-Name` HTTP header so the hub can label each device without server config
+- **Error hold** — display stays on the error screen until the hub reconnects; stale data is never re-shown after a lost connection
+
+### Server (Raspberry Pi)
+- **Web status page** — `http://netatmo-hub.local:8080/` with weather, device status, server metrics, live commit history and scrolling log
+- **Device tracking** — every `/weather` caller auto-registered by IP; named via `X-Device-Name` header; online/offline indicator with last-seen time and poll count
+- **Server metrics** — CPU usage, RAM, free disk space, uptime and Pi CPU temperature; colour-coded progress bars updated every 15 s
+- **Live commit history** — git log table on the status page, commit hashes linked to GitHub
+- **Auto-deploy** — Pi polls GitHub every 5 minutes via cron; pulls and restarts automatically on new commits
 - **Systemd service** — auto-starts on Pi boot, restarts on failure, logs to journald
 
 ---
@@ -60,7 +69,8 @@ netatmo-home-hub/
 │   ├── requirements.txt
 │   ├── config.example.env               ← Copy to .env and fill in credentials
 │   ├── netatmo-proxy.service            ← systemd unit
-│   └── setup.sh                         ← One-shot install script
+│   ├── setup.sh                         ← One-shot install script
+│   └── update.sh                        ← Auto-deploy script (run from cron)
 ├── firmware/                            ← PlatformIO project for display devices
 │   ├── platformio.ini
 │   ├── src/main.cpp                     ← Single source file, all boards
@@ -75,7 +85,7 @@ netatmo-home-hub/
     ├── configuration.md                 ← Credentials, build, flash
     ├── display-layout.md                ← Display card designs (OLED + TFT)
     ├── raspberry-pi-setup.md            ← Step-by-step Pi setup
-    ├── server.md                        ← Proxy API reference and web UI
+    ├── server.md                        ← Proxy API reference, web UI, features
     ├── wiring.md                        ← Pin connections for all boards
     └── revision-history.md              ← Version log
 ```
@@ -88,14 +98,16 @@ netatmo-home-hub/
 
 Follow **[docs/raspberry-pi-setup.md](docs/raspberry-pi-setup.md)** — covers OS flashing, SSH, credentials, and the systemd service.
 
-After setup, the Pi exposes four routes:
+After setup, the Pi exposes these routes:
 
 | Route | Description |
 |---|---|
 | `GET /weather` | Flat JSON — all weather fields |
 | `GET /health` | `{"ok": true, "has_data": true}` |
+| `GET /devices` | JSON array of known devices with online status |
+| `GET /metrics` | JSON with CPU, RAM, disk, uptime, temperature |
 | `GET /log` | Plain-text rolling log (for JS polling) |
-| `GET /` | Web UI — weather table + live log |
+| `GET /` | Web status page |
 
 ### 2. Flash a device
 
@@ -106,13 +118,14 @@ cd firmware
 cp include/esp32cam/arduino_secrets.h.example include/esp32cam/arduino_secrets.h
 ```
 
-Edit the secrets file — four values only:
+Edit the secrets file — five values:
 
 ```cpp
 #define SECRET_SSID  "your-wifi-ssid"
 #define SECRET_PASS  "your-wifi-password"
 #define PROXY_HOST   "netatmo-hub.local"   // or Pi's IP address
 #define PROXY_PORT   8080
+#define DEVICE_NAME  "ESP32-CAM"           // shown on the hub status page
 ```
 
 Build and upload:
@@ -150,7 +163,7 @@ pio run -e esp32c6_waveshare_lcd  --target upload
 - [Configuration](docs/configuration.md) — credentials, building, flashing, serial monitor
 - [Display layout](docs/display-layout.md) — OLED card designs and C6 full dashboard
 - [Raspberry Pi setup](docs/raspberry-pi-setup.md) — OS flashing, SSH, systemd service
-- [Server reference](docs/server.md) — proxy routes, token refresh, web UI
+- [Server reference](docs/server.md) — proxy features, routes, token refresh, web UI, auto-deploy
 - [Wiring](docs/wiring.md) — pin connections for all boards
 - [Revision history](docs/revision-history.md) — version log
 
