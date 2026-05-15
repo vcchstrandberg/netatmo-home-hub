@@ -26,6 +26,8 @@ from flask import Flask, jsonify, abort, Response, request
 
 load_dotenv()
 
+SERVER_VERSION = "1.3"
+
 CLIENT_ID      = os.environ["NETATMO_CLIENT_ID"]
 CLIENT_SECRET  = os.environ["NETATMO_CLIENT_SECRET"]
 DEVICE_TIMEOUT = int(os.environ.get("DEVICE_TIMEOUT", 600))
@@ -256,7 +258,7 @@ def index():
   </style>
 </head>
 <body>
-  <h1>Netatmo Hub</h1>
+  <h1>Netatmo Hub <span style="color:#8b949e;font-size:14px;font-weight:normal">v""" + SERVER_VERSION + """</span></h1>
   <div class="subtitle" id="ts">Loading…</div>
 
   <h2>Current weather</h2>
@@ -266,6 +268,17 @@ def index():
   <table id="dev-table"><tbody>
     <tr><td colspan="4" style="color:#8b949e">Loading…</td></tr>
   </tbody></table>
+
+  <h2>Version history</h2>
+  <details>
+    <summary style="color:#8b949e;cursor:pointer;margin-bottom:8px">Server changelog</summary>
+    <table style="width:640px;margin-top:8px">
+      <tr><td>v1.3</td><td>2026-05-15</td><td>Log polish — favicon filter, rain rounding, auto-deploy cron</td></tr>
+      <tr><td>v1.2</td><td>2026-05-15</td><td>Device tracking — auto-discovery, X-Device-Name header, status dashboard</td></tr>
+      <tr><td>v1.1</td><td>2026-05-14</td><td>Web UI — weather table, JS-polled live log, HTTP request logging</td></tr>
+      <tr><td>v1.0</td><td>2026-05-14</td><td>Initial release — Flask proxy, token refresh, /weather, /health</td></tr>
+    </table>
+  </details>
 
   <h2>Log</h2>
   <div id="log">Loading…</div>
