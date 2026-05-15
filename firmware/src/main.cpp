@@ -316,6 +316,7 @@ void fetchWeatherData()
     Serial.printf("Proxy HTTP %d\n", code);
     showError(g_loc->hub_unreachable, String(code).c_str());
     http.end();
+    g_hasData = false;
     return;
   }
   String json = http.getString();
@@ -328,6 +329,7 @@ void fetchWeatherData()
   if (!client.connect(PROXY_HOST, PROXY_PORT)) {
     Serial.println("Proxy connect failed");
     showError(g_loc->hub_unreachable);
+    g_hasData = false;
     return;
   }
   client.print("GET /weather HTTP/1.0\r\nHost: ");
@@ -343,7 +345,7 @@ void fetchWeatherData()
   client.stop();
 
   int j = resp.indexOf('{');
-  if (j == -1) { Serial.println("No JSON in proxy response"); return; }
+  if (j == -1) { Serial.println("No JSON in proxy response"); g_hasData = false; return; }
   parseWeather(resp.substring(j));
 #endif
 }
@@ -352,7 +354,7 @@ void fetchWeatherData()
 void parseWeather(const String& json)
 {
   JsonDocument doc;
-  if (deserializeJson(doc, json)) { Serial.println("JSON parse failed"); return; }
+  if (deserializeJson(doc, json)) { Serial.println("JSON parse failed"); g_hasData = false; return; }
 
   const char* city = doc["city"];
   if (city) g_city = String(city);
@@ -365,6 +367,7 @@ void parseWeather(const String& json)
   g_rain24h        = doc["rain_24h"]        | 0.0f;
   g_isRaining      = doc["is_raining"]      | false;
   g_hasData        = true;
+  g_lastCardSwitch = millis();  // restart card timer so display shows full CARD_MS before switching
 
   Serial.print("City: "); Serial.println(g_city);
   Serial.print("In: ");   Serial.print(g_indoorTemp);  Serial.print("  Out: "); Serial.println(g_outdoorTemp);
