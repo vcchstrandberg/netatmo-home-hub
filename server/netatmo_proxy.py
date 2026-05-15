@@ -149,7 +149,8 @@ def _log_request(response):
                 _devices[ip]["name"] = name  # update in case firmware was reflashed
             _devices[ip]["last_seen"] = time.time()
             _devices[ip]["count"]    += 1
-    if not request.path.startswith("/log") and not request.path.startswith("/devices"):
+    _SKIP = ("/log", "/devices", "/favicon", "/apple-touch-icon")
+    if not any(request.path.startswith(p) for p in _SKIP):
         _log(f"HTTP {request.method} {request.path} → {response.status_code}")
     return response
 
