@@ -15,6 +15,7 @@ Optional .env keys:
                  considered offline (default: 600)
 """
 import os
+import subprocess
 import time
 import threading
 from collections import deque
@@ -27,6 +28,39 @@ from flask import Flask, jsonify, abort, Response, request
 load_dotenv()
 
 SERVER_VERSION = "1.3"
+
+_REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def _get_remote_url() -> str:
+    try:
+        raw = subprocess.check_output(
+            ["git", "-C", _REPO_DIR, "remote", "get-url", "origin"],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        if raw.startswith("git@"):
+            raw = "https://" + raw[4:].replace(":", "/")
+        return raw.removesuffix(".git")
+    except Exception:
+        return ""
+
+_REMOTE_URL = _get_remote_url()
+
+
+def _git_log(n: int = 25) -> list[dict]:
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", _REPO_DIR, "log",
+             "--pretty=format:%h\x1f%ad\x1f%s", "--date=short", f"-{n}"],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        rows = []
+        for line in out.splitlines():
+            parts = line.split("\x1f", 2)
+            if len(parts) == 3:
+                rows.append({"hash": parts[0], "date": parts[1], "msg": parts[2]})
+        return rows
+    except Exception:
+        return []
 
 CLIENT_ID      = os.environ["NETATMO_CLIENT_ID"]
 CLIENT_SECRET  = os.environ["NETATMO_CLIENT_SECRET"]
@@ -227,6 +261,29 @@ def index():
     else:
         weather_rows = "<tr><td colspan='2'>No data yet</td></tr>"
 
+    commits = _git_log()
+    if commits:
+        commit_rows = "\n".join(
+            f"<tr>"
+            f"<td><a href='{_REMOTE_URL}/commit/{c['hash']}' target='_blank' "
+            f"style='color:#58a6ff;text-decoration:none'>{c['hash']}</a></td>"
+            f"<td style='color:#8b949e'>{c['date']}</td>"
+            f"<td>{c['msg']}</td>"
+            f"</tr>"
+            for c in commits
+        )
+        _history_html = (
+            f"<table style='width:700px'>"
+            f"<thead><tr>"
+            f"<th style='text-align:left;color:#8b949e;padding:4px 12px;width:70px'>Commit</th>"
+            f"<th style='text-align:left;color:#8b949e;padding:4px 12px;width:100px'>Date</th>"
+            f"<th style='text-align:left;color:#8b949e;padding:4px 12px'>Message</th>"
+            f"</tr></thead>"
+            f"<tbody>{commit_rows}</tbody></table>"
+        )
+    else:
+        _history_html = "<p style='color:#8b949e'>Git history unavailable.</p>"
+
     html = """<!doctype html>
 <html lang="en">
 <head>
@@ -269,16 +326,8 @@ def index():
     <tr><td colspan="4" style="color:#8b949e">Loading…</td></tr>
   </tbody></table>
 
-  <h2>Version history</h2>
-  <details>
-    <summary style="color:#8b949e;cursor:pointer;margin-bottom:8px">Server changelog</summary>
-    <table style="width:640px;margin-top:8px">
-      <tr><td>v1.3</td><td>2026-05-15</td><td>Log polish — favicon filter, rain rounding, auto-deploy cron</td></tr>
-      <tr><td>v1.2</td><td>2026-05-15</td><td>Device tracking — auto-discovery, X-Device-Name header, status dashboard</td></tr>
-      <tr><td>v1.1</td><td>2026-05-14</td><td>Web UI — weather table, JS-polled live log, HTTP request logging</td></tr>
-      <tr><td>v1.0</td><td>2026-05-14</td><td>Initial release — Flask proxy, token refresh, /weather, /health</td></tr>
-    </table>
-  </details>
+  <h2>Commit history</h2>
+  """ + _history_html + """
 
   <h2>Log</h2>
   <div id="log">Loading…</div>
