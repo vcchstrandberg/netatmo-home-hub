@@ -21,6 +21,7 @@ import threading
 from collections import deque
 from datetime import datetime
 
+import psutil
 import requests
 from dotenv import load_dotenv, set_key
 from flask import Flask, jsonify, abort, Response, request
@@ -85,6 +86,8 @@ _token_expiry  = 0.0
 _weather       = None
 _log_buffer    = deque(maxlen=500)
 _devices: dict[str, dict] = {}   # ip -> {name, last_seen, count}
+_metrics: dict = {}
+_metrics_lock  = threading.Lock()
 
 app = Flask(__name__)
 
@@ -162,6 +165,52 @@ def _ts():
     return time.strftime("%H:%M:%S")
 
 
+def _fmt_uptime(seconds: int) -> str:
+    d, r = divmod(seconds, 86400)
+    h, r = divmod(r, 3600)
+    m     = r // 60
+    parts = []
+    if d: parts.append(f"{d}d")
+    if h: parts.append(f"{h}h")
+    parts.append(f"{m}m")
+    return " ".join(parts)
+
+
+def _collect_metrics():
+    vm = psutil.virtual_memory()
+    du = psutil.disk_usage("/")
+    data = {
+        "cpu_percent":   psutil.cpu_percent(),
+        "ram_used_mb":   vm.used >> 20,
+        "ram_total_mb":  vm.total >> 20,
+        "ram_percent":   round(vm.percent, 1),
+        "disk_used_gb":  round(du.used  / 1e9, 1),
+        "disk_free_gb":  round(du.free  / 1e9, 1),
+        "disk_total_gb": round(du.total / 1e9, 1),
+        "disk_percent":  round(du.percent, 1),
+        "uptime_s":      int(time.time() - psutil.boot_time()),
+    }
+    try:
+        data["cpu_temp"] = round(
+            float(open("/sys/class/thermal/thermal_zone0/temp").read()) / 1000, 1
+        )
+    except Exception:
+        data["cpu_temp"] = None
+    with _metrics_lock:
+        _metrics.update(data)
+
+
+def _metrics_loop():
+    psutil.cpu_percent()          # prime — first call always returns 0
+    time.sleep(1)
+    while True:
+        try:
+            _collect_metrics()
+        except Exception:
+            pass
+        time.sleep(15)
+
+
 def _ago(ts: float) -> str:
     s = int(time.time() - ts)
     if s < 60:   return f"{s}s ago"
@@ -221,6 +270,17 @@ def devices():
             for ip, d in sorted(_devices.items(), key=lambda x: -x[1]["last_seen"])
         ]
     resp = jsonify(rows)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
+@app.route("/metrics")
+def metrics_route():
+    with _metrics_lock:
+        data = dict(_metrics)
+    if data.get("uptime_s") is not None:
+        data["uptime_fmt"] = _fmt_uptime(data["uptime_s"])
+    resp = jsonify(data)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
 
@@ -307,6 +367,11 @@ def index():
            border-radius: 50%; margin-right: 6px; }
     .online  { background: #3fb950; }
     .offline { background: #f85149; }
+    .bar-wrap { background: #21262d; border-radius: 4px; height: 8px;
+                width: 180px; display: inline-block; vertical-align: middle; }
+    .bar-fill { height: 8px; border-radius: 4px; background: #238636; }
+    .bar-warn { background: #d29922; }
+    .bar-crit { background: #f85149; }
     #log {
       background: #161b22; border: 1px solid #21262d; border-radius: 6px;
       padding: 16px; white-space: pre-wrap; color: #3fb950;
@@ -320,6 +385,11 @@ def index():
 
   <h2>Current weather</h2>
   <table><tbody>""" + weather_rows + """</tbody></table>
+
+  <h2>Server</h2>
+  <table id="metrics-table"><tbody>
+    <tr><td colspan="2" style="color:#8b949e">Loading…</td></tr>
+  </tbody></table>
 
   <h2>Devices</h2>
   <table id="dev-table"><tbody>
@@ -366,10 +436,33 @@ def index():
         });
     }
 
+    function bar(pct) {
+      const cls = pct >= 90 ? 'bar-crit' : pct >= 70 ? 'bar-warn' : '';
+      return '<span class="bar-wrap"><span class="bar-fill ' + cls + '" style="width:' + pct + '%"></span></span> ' + pct + '%';
+    }
+
+    function refreshMetrics() {
+      fetch('/metrics?t=' + Date.now())
+        .then(r => r.json())
+        .then(m => {
+          const rows = [
+            ['CPU',         bar(m.cpu_percent)],
+            ['RAM',         bar(m.ram_percent) + '  <span style="color:#8b949e">(' + m.ram_used_mb + ' / ' + m.ram_total_mb + ' MB)</span>'],
+            ['Disk free',   bar(m.disk_percent) + '  <span style="color:#8b949e">(' + m.disk_free_gb + ' GB free of ' + m.disk_total_gb + ' GB)</span>'],
+            ['Uptime',      m.uptime_fmt],
+            ['Temperature', m.cpu_temp !== null ? m.cpu_temp + ' °C' : '—'],
+          ];
+          document.querySelector('#metrics-table tbody').innerHTML =
+            rows.map(r => '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>').join('');
+        });
+    }
+
     refreshLog();
     refreshDevices();
+    refreshMetrics();
     setInterval(refreshLog,     10000);
     setInterval(refreshDevices, 15000);
+    setInterval(refreshMetrics, 15000);
   </script>
 </body>
 </html>"""
@@ -387,6 +480,9 @@ if __name__ == "__main__":
 
     t = threading.Thread(target=_poll_loop, daemon=True)
     t.start()
+
+    m = threading.Thread(target=_metrics_loop, daemon=True)
+    m.start()
 
     port = int(os.environ.get("PORT", 8080))
     _log(f"Listening on 0.0.0.0:{port}")
