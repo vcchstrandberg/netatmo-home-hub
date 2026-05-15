@@ -6,7 +6,13 @@ Refreshes Netatmo tokens automatically, polls the API every 5 minutes,
 and serves the latest weather data as a flat JSON on GET /weather.
 Devices on the local network call this instead of Netatmo directly.
 
-Web UI: http://netatmo-hub.local:8080/  — current weather + live log
+Web UI: http://netatmo-hub.local:8080/  — weather, device status, live log
+
+Optional .env keys:
+  DEVICE_NAMES   Comma-separated IP:Name pairs, e.g.
+                 192.168.0.115:ESP32-CAM,192.168.0.116:Uno R4
+  DEVICE_TIMEOUT Seconds without a /weather call before a device is
+                 considered offline (default: 600)
 """
 import os
 import time
@@ -20,8 +26,16 @@ from flask import Flask, jsonify, abort, Response, request
 
 load_dotenv()
 
-CLIENT_ID     = os.environ["NETATMO_CLIENT_ID"]
-CLIENT_SECRET = os.environ["NETATMO_CLIENT_SECRET"]
+CLIENT_ID      = os.environ["NETATMO_CLIENT_ID"]
+CLIENT_SECRET  = os.environ["NETATMO_CLIENT_SECRET"]
+DEVICE_TIMEOUT = int(os.environ.get("DEVICE_TIMEOUT", 600))
+
+# Optional human-readable names: "192.168.0.115:ESP32-CAM,..."
+_device_names: dict[str, str] = {}
+for _entry in os.environ.get("DEVICE_NAMES", "").split(","):
+    if ":" in _entry:
+        _ip, _name = _entry.strip().split(":", 1)
+        _device_names[_ip.strip()] = _name.strip()
 
 TOKEN_URL  = "https://api.netatmo.com/oauth2/token"
 DATA_URL   = "https://api.netatmo.com/api/getstationsdata"
@@ -34,6 +48,7 @@ _refresh_token = os.environ["NETATMO_REFRESH_TOKEN"]
 _token_expiry  = 0.0
 _weather       = None
 _log_buffer    = deque(maxlen=500)
+_devices: dict[str, dict] = {}   # ip -> {name, last_seen, count}
 
 app = Flask(__name__)
 
@@ -111,13 +126,32 @@ def _ts():
     return time.strftime("%H:%M:%S")
 
 
+def _ago(ts: float) -> str:
+    s = int(time.time() - ts)
+    if s < 60:   return f"{s}s ago"
+    if s < 3600: return f"{s // 60}m ago"
+    return f"{s // 3600}h ago"
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.after_request
 def _log_request(response):
-    if not request.path.startswith("/log"):
+    ip = request.remote_addr
+    if request.path == "/weather":
+        with _lock:
+            if ip not in _devices:
+                _devices[ip] = {
+                    "name":      _device_names.get(ip, ip),
+                    "last_seen": 0.0,
+                    "count":     0,
+                }
+            _devices[ip]["last_seen"] = time.time()
+            _devices[ip]["count"]    += 1
+    if not request.path.startswith("/log") and not request.path.startswith("/devices"):
         _log(f"HTTP {request.method} {request.path} → {response.status_code}")
     return response
+
 
 @app.route("/weather")
 def weather():
@@ -131,6 +165,26 @@ def weather():
 def health():
     with _lock:
         return jsonify({"ok": True, "has_data": _weather is not None})
+
+
+@app.route("/devices")
+def devices():
+    now = time.time()
+    with _lock:
+        rows = [
+            {
+                "ip":        ip,
+                "name":      d["name"],
+                "last_seen": int(d["last_seen"]),
+                "ago":       _ago(d["last_seen"]) if d["last_seen"] else "never",
+                "count":     d["count"],
+                "online":    (now - d["last_seen"]) < DEVICE_TIMEOUT,
+            }
+            for ip, d in sorted(_devices.items(), key=lambda x: -x[1]["last_seen"])
+        ]
+    resp = jsonify(rows)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
 
 
 @app.route("/log")
@@ -184,10 +238,14 @@ def index():
     .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 12px; }
     h2 { color: #8b949e; font-size: 13px; text-transform: uppercase;
          letter-spacing: 1px; margin-bottom: 8px; margin-top: 24px; }
-    table { border-collapse: collapse; width: 340px; }
+    table { border-collapse: collapse; width: 480px; }
     td { padding: 5px 12px; border-bottom: 1px solid #21262d; }
     tr td:first-child { color: #8b949e; width: 140px; }
     tr td:last-child { color: #e6edf3; }
+    .dot { display: inline-block; width: 8px; height: 8px;
+           border-radius: 50%; margin-right: 6px; }
+    .online  { background: #3fb950; }
+    .offline { background: #f85149; }
     #log {
       background: #161b22; border: 1px solid #21262d; border-radius: 6px;
       padding: 16px; white-space: pre-wrap; color: #3fb950;
@@ -202,11 +260,16 @@ def index():
   <h2>Current weather</h2>
   <table><tbody>""" + weather_rows + """</tbody></table>
 
+  <h2>Devices</h2>
+  <table id="dev-table"><tbody>
+    <tr><td colspan="4" style="color:#8b949e">Loading…</td></tr>
+  </tbody></table>
+
   <h2>Log</h2>
   <div id="log">Loading…</div>
 
   <script>
-    function refresh() {
+    function refreshLog() {
       fetch('/log?t=' + Date.now())
         .then(r => r.text())
         .then(t => {
@@ -217,12 +280,32 @@ def index():
           document.getElementById('ts').textContent =
             'Live — last updated ' + new Date().toLocaleTimeString();
         })
-        .catch(e => {
-          document.getElementById('ts').textContent = 'Fetch error: ' + e;
+        .catch(e => { document.getElementById('ts').textContent = 'Fetch error: ' + e; });
+    }
+
+    function refreshDevices() {
+      fetch('/devices?t=' + Date.now())
+        .then(r => r.json())
+        .then(devs => {
+          const tbody = document.querySelector('#dev-table tbody');
+          if (devs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="color:#8b949e">No devices seen yet</td></tr>';
+            return;
+          }
+          tbody.innerHTML = devs.map(d => {
+            const dot   = '<span class="dot ' + (d.online ? 'online' : 'offline') + '"></span>';
+            const label = d.name !== d.ip ? d.name + ' <span style="color:#8b949e">(' + d.ip + ')</span>' : d.ip;
+            const count = d.count + ' poll' + (d.count !== 1 ? 's' : '');
+            return '<tr><td>' + dot + label + '</td><td>' + d.ago +
+                   '</td><td>' + count + '</td></tr>';
+          }).join('');
         });
     }
-    refresh();
-    setInterval(refresh, 10000);
+
+    refreshLog();
+    refreshDevices();
+    setInterval(refreshLog,     10000);
+    setInterval(refreshDevices, 15000);
   </script>
 </body>
 </html>"""
