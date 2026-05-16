@@ -372,6 +372,15 @@ def index():
     .bar-fill { height: 8px; border-radius: 4px; background: #238636; }
     .bar-warn { background: #d29922; }
     .bar-crit { background: #f85149; }
+    .warn-box {
+      border-radius: 6px; padding: 10px 16px; margin-bottom: 12px;
+      border-left: 4px solid; font-size: 13px;
+    }
+    .warn-box.level-warn { background: #2a2000; border-color: #d29922; }
+    .warn-box.level-crit { background: #2a0000; border-color: #f85149; }
+    .warn-box strong { color: #e6edf3; }
+    .warn-box ul { margin: 6px 0 0 16px; }
+    .warn-box li { margin: 3px 0; color: #c9d1d9; }
     #log {
       background: #161b22; border: 1px solid #21262d; border-radius: 6px;
       padding: 16px; white-space: pre-wrap; color: #3fb950;
@@ -387,6 +396,7 @@ def index():
   <table><tbody>""" + weather_rows + """</tbody></table>
 
   <h2>Server</h2>
+  <div id="warnings"></div>
   <table id="metrics-table"><tbody>
     <tr><td colspan="2" style="color:#8b949e">Loading…</td></tr>
   </tbody></table>
@@ -441,10 +451,38 @@ def index():
       return '<span class="bar-wrap"><span class="bar-fill ' + cls + '" style="width:' + pct + '%"></span></span> ' + pct + '%';
     }
 
+    function checkWarnings(m) {
+      const thresholds = [
+        { label: 'CPU temp', val: m.cpu_temp,     warn: 70,  crit: 80,  fmt: v => v + ' °C', unit: '°C' },
+        { label: 'CPU',      val: m.cpu_percent,  warn: 70,  crit: 90,  fmt: v => v + '%',    unit: '%'  },
+        { label: 'RAM',      val: m.ram_percent,  warn: 70,  crit: 90,  fmt: v => v + '%',    unit: '%'  },
+        { label: 'Disk',     val: m.disk_percent, warn: 70,  crit: 90,  fmt: v => v + '%',    unit: '%'  },
+      ];
+      const issues = [];
+      let maxLevel = 0;
+      for (const t of thresholds) {
+        if (t.val === null || t.val === undefined) continue;
+        if (t.val >= t.crit) {
+          issues.push(t.label + ': ' + t.fmt(t.val) + ' — critical (threshold >' + t.crit + t.unit + ')');
+          maxLevel = 2;
+        } else if (t.val >= t.warn) {
+          issues.push(t.label + ': ' + t.fmt(t.val) + ' — high (threshold >' + t.warn + t.unit + ')');
+          if (maxLevel < 1) maxLevel = 1;
+        }
+      }
+      const el = document.getElementById('warnings');
+      if (issues.length === 0) { el.innerHTML = ''; return; }
+      const cls   = maxLevel === 2 ? 'level-crit' : 'level-warn';
+      const label = maxLevel === 2 ? 'CRITICAL' : 'WARNING';
+      el.innerHTML = '<div class="warn-box ' + cls + '"><strong>' + label + '</strong><ul>' +
+        issues.map(i => '<li>' + i + '</li>').join('') + '</ul></div>';
+    }
+
     function refreshMetrics() {
       fetch('/metrics?t=' + Date.now())
         .then(r => r.json())
         .then(m => {
+          checkWarnings(m);
           const rows = [
             ['CPU',         bar(m.cpu_percent)],
             ['RAM',         bar(m.ram_percent) + '  <span style="color:#8b949e">(' + m.ram_used_mb + ' / ' + m.ram_total_mb + ' MB)</span>'],
