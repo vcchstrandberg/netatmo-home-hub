@@ -486,7 +486,7 @@ def index():
           const rows = [
             ['CPU',         bar(m.cpu_percent)],
             ['RAM',         bar(m.ram_percent) + '  <span style="color:#8b949e">(' + m.ram_used_mb + ' / ' + m.ram_total_mb + ' MB)</span>'],
-            ['Disk free',   bar(m.disk_percent) + '  <span style="color:#8b949e">(' + m.disk_free_gb + ' GB free of ' + m.disk_total_gb + ' GB)</span>'],
+            ['Disk used',   bar(m.disk_percent) + '  <span style="color:#8b949e">(' + m.disk_free_gb + ' GB free of ' + m.disk_total_gb + ' GB)</span>'],
             ['Uptime',      m.uptime_fmt],
             ['Temperature', m.cpu_temp !== null ? m.cpu_temp + ' °C' : '—'],
           ];
