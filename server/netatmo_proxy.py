@@ -234,7 +234,7 @@ def _log_request(response):
                 _devices[ip]["name"] = name  # update in case firmware was reflashed
             _devices[ip]["last_seen"] = time.time()
             _devices[ip]["count"]    += 1
-    _SKIP = ("/log", "/devices", "/favicon", "/apple-touch-icon")
+    _SKIP = ("/log", "/devices", "/metrics", "/favicon", "/apple-touch-icon")
     if not any(request.path.startswith(p) for p in _SKIP):
         _log(f"HTTP {request.method} {request.path} → {response.status_code}")
     return response
@@ -292,6 +292,26 @@ def log_feed():
     resp = Response(text, mimetype="text/plain")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
+
+
+@app.route("/update", methods=["POST"])
+def update():
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", _REPO_DIR, "pull", "--ff-only"],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+    except subprocess.CalledProcessError as e:
+        return jsonify({"ok": False, "msg": e.output.decode().strip()}), 500
+
+    _log(f"Manual update: {out}")
+
+    def _restart():
+        time.sleep(1.5)
+        subprocess.call(["sudo", "systemctl", "restart", "netatmo-proxy"])
+
+    threading.Thread(target=_restart, daemon=True).start()
+    return jsonify({"ok": True, "msg": out})
 
 
 @app.route("/")
@@ -406,7 +426,14 @@ def index():
     <tr><td colspan="4" style="color:#8b949e">Loading…</td></tr>
   </tbody></table>
 
-  <h2>Commit history</h2>
+  <h2>Commit history
+    <button id="update-btn" onclick="runUpdate()"
+      style="margin-left:12px;padding:3px 10px;font-size:11px;font-family:inherit;
+             background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer">
+      Pull &amp; Restart
+    </button>
+    <span id="update-msg" style="margin-left:10px;font-size:11px;color:#8b949e"></span>
+  </h2>
   """ + _history_html + """
 
   <h2>Log</h2>
@@ -492,6 +519,33 @@ def index():
           ];
           document.querySelector('#metrics-table tbody').innerHTML =
             rows.map(r => '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>').join('');
+        });
+    }
+
+    function runUpdate() {
+      const btn = document.getElementById('update-btn');
+      const msg = document.getElementById('update-msg');
+      btn.disabled = true;
+      msg.textContent = 'Pulling...';
+      fetch('/update', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+          if (d.ok) {
+            const already = d.msg.includes('Already up to date');
+            msg.style.color = '#3fb950';
+            msg.textContent = already ? 'Already up to date' : 'Done — restarting...';
+            if (!already) setTimeout(() => location.reload(), 4000);
+            else btn.disabled = false;
+          } else {
+            msg.style.color = '#f85149';
+            msg.textContent = 'Error: ' + d.msg;
+            btn.disabled = false;
+          }
+        })
+        .catch(e => {
+          msg.style.color = '#f85149';
+          msg.textContent = 'Request failed: ' + e;
+          btn.disabled = false;
         });
     }
 
