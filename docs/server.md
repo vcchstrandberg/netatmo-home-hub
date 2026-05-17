@@ -14,6 +14,7 @@ The proxy is a single Python script (`server/netatmo_proxy.py`) running under Fl
 - **Live commit history** — reads `git log` at request time and renders a linked table on the status page
 - **Auto-deploy** — `update.sh` cron script polls GitHub every 5 minutes, pulls if there is a new commit, and restarts the service automatically
 - **Web status page** — dark-themed dashboard showing weather, device status, server metrics, commit history and scrolling live log; all sections JS-polled without page reload
+- **Pull & Restart button** — one-click deploy from the status page; runs `git pull --ff-only` and restarts the service; shows inline feedback and auto-reloads the page if new commits were pulled
 - **Structured logging** — all events go through `_log()` (printed to stdout + stored in a 500-entry in-memory deque); HTTP requests logged via `@app.after_request`
 
 ---
@@ -134,15 +135,18 @@ Response includes `Cache-Control: no-cache` to prevent browser caching.
 
 ### `GET /`
 
-Web status page — a dark-themed dashboard with five sections:
+Web status page — a dark-themed dashboard with the following sections:
 
 | Section | Update mechanism |
 |---|---|
 | Current weather | Server-rendered on page load |
+| Server warnings | JS polls `/metrics` every 15 s; banner shown/hidden based on thresholds |
 | Server metrics | JS polls `/metrics` every 15 s |
 | Devices | JS polls `/devices` every 15 s |
 | Commit history | Server-rendered on page load (reads `git log` live) |
 | Log | JS polls `/log` every 10 s, auto-scrolls to bottom |
+
+A **Pull & Restart** button sits next to the Commit history heading. Clicking it calls `POST /update`, which runs `git pull --ff-only` and restarts the service. If the repo is already up to date, no restart is triggered. Requires passwordless sudo for `systemctl restart netatmo-proxy` — see [raspberry-pi-setup.md](raspberry-pi-setup.md).
 
 Access at: `http://netatmo-hub.local:8080/` (or use the Pi's IP directly — `netatmo-hub.local` does not resolve on Android).
 
@@ -154,6 +158,7 @@ All application events go through `_log(msg)`, which prints to stdout (captured 
 
 - `/log` — internal JS polling
 - `/devices` — internal JS polling
+- `/metrics` — internal JS polling
 - `/favicon*`, `/apple-touch-icon*` — browser auto-requests
 
 | Event | Example log entry |
