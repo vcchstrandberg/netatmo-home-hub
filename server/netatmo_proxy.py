@@ -369,7 +369,7 @@ def index():
     .offline { background: #f85149; }
     .bar-wrap { background: #21262d; border-radius: 4px; height: 8px;
                 width: 180px; display: inline-block; vertical-align: middle; }
-    .bar-fill { height: 8px; border-radius: 4px; background: #238636; }
+    .bar-fill { display: block; height: 8px; border-radius: 4px; background: #238636; }
     .bar-warn { background: #d29922; }
     .bar-crit { background: #f85149; }
     .warn-box {
