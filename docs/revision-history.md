@@ -14,6 +14,7 @@
 
 | Version | Date | Notes |
 |---|---|---|
+| v1.4 | 2026-05-17 | **Threshold warnings** — yellow/red warning banner above Server metrics when CPU temp, CPU, RAM or disk exceeds configurable thresholds. Thresholds: CPU temp warn 70 °C / crit 80 °C; CPU, RAM, disk warn 70 % / crit 90 %. Banner disappears automatically when all metrics drop below thresholds. Fixed misleading "Disk free" label to "Disk used". |
 | v1.3 | 2026-05-15 | **Log polish** — browser icon requests (`/favicon.ico`, `/apple-touch-icon`) filtered from log. Rain values rounded to 1 decimal place (fixes floating-point noise, e.g. `0.30300000000000005`). Auto-deploy cron script (`server/update.sh`) — Pi polls GitHub every 5 min and restarts on new commits. |
 | v1.2 | 2026-05-15 | **Device tracking** — every `/weather` caller registered automatically by IP. `X-Device-Name` header used as display name (falls back to `DEVICE_NAMES` env var, then bare IP). `/devices` JSON endpoint. Devices section on status page with green/red online indicator, last-seen time, poll count. Polled every 15 s via JS. |
 | v1.1 | 2026-05-14 | **Web UI** — `GET /` serves dark-themed status page with weather table and live log. Dedicated `GET /log` endpoint (plain text, no-cache headers). JS `setInterval` polls `/log` every 10 s and updates the div without page reload. HTTP requests logged to the in-memory buffer via `@app.after_request`. |
