@@ -10,6 +10,7 @@ The proxy is a single Python script (`server/netatmo_proxy.py`) running under Fl
 - **Automatic token refresh** — Netatmo OAuth2 refresh token rotated on every poll cycle and persisted back to `.env`; never needs manual intervention
 - **Device tracking** — every `/weather` caller auto-registered by IP; named via the `X-Device-Name` request header; online/offline status based on configurable timeout
 - **Server metrics** — CPU, RAM, disk, uptime and Pi CPU temperature sampled every 15 s by a background thread
+- **Threshold warnings** — a warning banner appears above the Server metrics section when any metric exceeds a threshold; yellow for high, red for critical
 - **Live commit history** — reads `git log` at request time and renders a linked table on the status page
 - **Auto-deploy** — `update.sh` cron script polls GitHub every 5 minutes, pulls if there is a new commit, and restarts the service automatically
 - **Web status page** — dark-themed dashboard showing weather, device status, server metrics, commit history and scrolling live log; all sections JS-polled without page reload
