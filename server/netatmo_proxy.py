@@ -101,10 +101,17 @@ def _db_init():
                 outdoor_temp     REAL,
                 indoor_humidity  REAL,
                 pressure         REAL,
-                rain_1h          REAL
+                rain_1h          REAL,
+                co2              REAL,
+                noise            REAL
             )
         """)
         con.execute("CREATE INDEX IF NOT EXISTS weather_ts ON weather_history(ts)")
+        for col, typ in [("co2", "REAL"), ("noise", "REAL")]:
+            try:
+                con.execute(f"ALTER TABLE weather_history ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
 def _db_insert(ts: int, cpu: float, ram: float, disk: float, temp):
     with sqlite3.connect(DB_FILE) as con:
@@ -120,9 +127,10 @@ def _db_insert(ts: int, cpu: float, ram: float, disk: float, temp):
 def _db_insert_weather(ts: int, w: dict):
     with sqlite3.connect(DB_FILE) as con:
         con.execute(
-            "INSERT OR REPLACE INTO weather_history VALUES (?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO weather_history VALUES (?,?,?,?,?,?,?,?)",
             (ts, w["indoor_temp"], w["outdoor_temp"],
-             w["indoor_humidity"], w["pressure"], w["rain_1h"])
+             w["indoor_humidity"], w["pressure"], w["rain_1h"],
+             w.get("co2"), w.get("noise"))
         )
         con.execute(
             "DELETE FROM weather_history WHERE ts < ?",
@@ -133,7 +141,7 @@ def _db_query_weather(since_ts: int) -> list[dict]:
     with sqlite3.connect(DB_FILE) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            "SELECT ts, indoor_temp, outdoor_temp, indoor_humidity, pressure, rain_1h "
+            "SELECT ts, indoor_temp, outdoor_temp, indoor_humidity, pressure, rain_1h, co2, noise "
             "FROM weather_history WHERE ts >= ? ORDER BY ts",
             (since_ts,)
         ).fetchall()
@@ -212,6 +220,8 @@ def _fetch():
             "city":            city,
             "indoor_temp":     indoor.get("Temperature", 0),
             "indoor_humidity": indoor.get("Humidity", 0),
+            "co2":             indoor.get("CO2"),
+            "noise":           indoor.get("Noise"),
             "pressure":        indoor.get("Pressure", 0),
             "outdoor_temp":    outdoor.get("Temperature", 0),
             "rain_1h":         round(rain.get("sum_rain_1", 0), 1),
@@ -432,6 +442,8 @@ def index():
             ("City",            w.get("city", "—")),
             ("Indoor temp",     f"{w['indoor_temp']} °C"),
             ("Indoor humidity", f"{w['indoor_humidity']} %"),
+            ("CO2",             f"{w['co2']} ppm" if w.get('co2') is not None else "—"),
+            ("Noise",           f"{w['noise']} dB" if w.get('noise') is not None else "—"),
             ("Pressure",        f"{w['pressure']} hPa"),
             ("Outdoor temp",    f"{w['outdoor_temp']} °C"),
             ("Rain 1h",         f"{w['rain_1h']} mm"),
@@ -550,6 +562,13 @@ def index():
     <div class="chart-box"><div style="color:#8b949e;font-size:11px;margin-bottom:4px">Pressure hPa</div>
       <canvas id="chart-w-pres"></canvas></div>
   </div>
+  <div class="chart-row">
+    <div class="chart-box"><div style="color:#8b949e;font-size:11px;margin-bottom:4px">CO2 ppm</div>
+      <canvas id="chart-w-co2"></canvas></div>
+    <div class="chart-box"><div style="color:#8b949e;font-size:11px;margin-bottom:4px">Noise dB</div>
+      <canvas id="chart-w-noise"></canvas></div>
+    <div class="chart-box"></div>
+  </div>
 
   <h2>Server</h2>
   <div id="warnings"></div>
@@ -637,8 +656,10 @@ def index():
         plugins: { legend: { display: false } },
         maintainAspectRatio: false }
     });
-    const wHumChart  = makeChart('chart-w-hum',  '#3fb950', 0, 100);
-    const wPresChart = makeChart('chart-w-pres', '#a371f7', null, null);
+    const wHumChart   = makeChart('chart-w-hum',   '#3fb950', 0, 100);
+    const wPresChart  = makeChart('chart-w-pres',  '#a371f7', null, null);
+    const wCo2Chart   = makeChart('chart-w-co2',   '#f0883e', null, null);
+    const wNoiseChart = makeChart('chart-w-noise', '#8b949e', null, null);
 
     let _wCtxHours = 24;
 
@@ -665,6 +686,12 @@ def index():
           wPresChart.data.labels = labels;
           wPresChart.data.datasets[0].data = rows.map(r => r.pressure);
           wPresChart.update();
+          wCo2Chart.data.labels = labels;
+          wCo2Chart.data.datasets[0].data = rows.map(r => r.co2 !== null ? r.co2 : NaN);
+          wCo2Chart.update();
+          wNoiseChart.data.labels = labels;
+          wNoiseChart.data.datasets[0].data = rows.map(r => r.noise !== null ? r.noise : NaN);
+          wNoiseChart.update();
         });
     }
 
