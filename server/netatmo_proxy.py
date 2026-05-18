@@ -94,6 +94,17 @@ def _db_init():
             )
         """)
         con.execute("CREATE INDEX IF NOT EXISTS metrics_ts ON metrics(ts)")
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS weather_history (
+                ts               INTEGER PRIMARY KEY,
+                indoor_temp      REAL,
+                outdoor_temp     REAL,
+                indoor_humidity  REAL,
+                pressure         REAL,
+                rain_1h          REAL
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS weather_ts ON weather_history(ts)")
 
 def _db_insert(ts: int, cpu: float, ram: float, disk: float, temp):
     with sqlite3.connect(DB_FILE) as con:
@@ -105,6 +116,28 @@ def _db_insert(ts: int, cpu: float, ram: float, disk: float, temp):
             "DELETE FROM metrics WHERE ts < ?",
             (ts - RETAIN_DAYS * 86400,)
         )
+
+def _db_insert_weather(ts: int, w: dict):
+    with sqlite3.connect(DB_FILE) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO weather_history VALUES (?,?,?,?,?,?)",
+            (ts, w["indoor_temp"], w["outdoor_temp"],
+             w["indoor_humidity"], w["pressure"], w["rain_1h"])
+        )
+        con.execute(
+            "DELETE FROM weather_history WHERE ts < ?",
+            (ts - RETAIN_DAYS * 86400,)
+        )
+
+def _db_query_weather(since_ts: int) -> list[dict]:
+    with sqlite3.connect(DB_FILE) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT ts, indoor_temp, outdoor_temp, indoor_humidity, pressure, rain_1h "
+            "FROM weather_history WHERE ts >= ? ORDER BY ts",
+            (since_ts,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 def _db_query(since_ts: int) -> list[dict]:
     with sqlite3.connect(DB_FILE) as con:
@@ -187,6 +220,10 @@ def _fetch():
             "updated_at":      int(time.time()),
         }
     _log(f"Updated — {city}  in={indoor.get('Temperature')}°  out={outdoor.get('Temperature')}°")
+    try:
+        _db_insert_weather(int(time.time()), _weather)
+    except Exception:
+        pass
 
 
 def _poll_loop():
@@ -341,6 +378,16 @@ def log_feed():
     return resp
 
 
+@app.route("/weather/history")
+def weather_history():
+    hours = min(int(request.args.get("hours", 24)), 24 * 30)
+    since = int(time.time()) - hours * 3600
+    rows  = _db_query_weather(since)
+    resp  = jsonify(rows)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
 @app.route("/metrics/history")
 def metrics_history():
     hours = min(int(request.args.get("hours", 1)), 24 * 30)
@@ -481,6 +528,29 @@ def index():
   <h2>Current weather</h2>
   <table><tbody>""" + weather_rows + """</tbody></table>
 
+  <h2>Weather history
+    <span style="margin-left:12px">
+      <button class="ctx-btn" onclick="setWCtx(6)">6h</button>
+      <button class="ctx-btn active" onclick="setWCtx(24)">24h</button>
+      <button class="ctx-btn" onclick="setWCtx(168)">7d</button>
+      <button class="ctx-btn" onclick="setWCtx(720)">30d</button>
+    </span>
+  </h2>
+  <div class="chart-row">
+    <div class="chart-box">
+      <div style="font-size:11px;margin-bottom:4px">
+        <span style="color:#f78166">Indoor</span>
+        <span style="color:#8b949e;margin:0 4px">/</span>
+        <span style="color:#58a6ff">Outdoor</span>
+        <span style="color:#8b949e"> °C</span>
+      </div>
+      <canvas id="chart-w-temp"></canvas></div>
+    <div class="chart-box"><div style="color:#8b949e;font-size:11px;margin-bottom:4px">Humidity %</div>
+      <canvas id="chart-w-hum"></canvas></div>
+    <div class="chart-box"><div style="color:#8b949e;font-size:11px;margin-bottom:4px">Pressure hPa</div>
+      <canvas id="chart-w-pres"></canvas></div>
+  </div>
+
   <h2>Server</h2>
   <div id="warnings"></div>
   <table id="metrics-table"><tbody>
@@ -554,6 +624,52 @@ def index():
       ram:  makeChart('chart-ram',  '#3fb950', 0, 100),
       temp: makeChart('chart-temp', '#d29922', null, null),
     };
+
+    const wTempChart = new Chart(document.getElementById('chart-w-temp'), {
+      type: 'line',
+      data: { labels: [], datasets: [
+        { label: 'Indoor', data: [], borderColor: '#f78166', borderWidth: 1.5,
+          pointRadius: 0, fill: false, tension: 0.3 },
+        { label: 'Outdoor', data: [], borderColor: '#58a6ff', borderWidth: 1.5,
+          pointRadius: 0, fill: false, tension: 0.3 },
+      ]},
+      options: { ...JSON.parse(JSON.stringify(_chartDefaults)),
+        plugins: { legend: { display: false } },
+        maintainAspectRatio: false }
+    });
+    const wHumChart  = makeChart('chart-w-hum',  '#3fb950', 0, 100);
+    const wPresChart = makeChart('chart-w-pres', '#a371f7', null, null);
+
+    let _wCtxHours = 24;
+
+    function setWCtx(h) {
+      _wCtxHours = h;
+      event.currentTarget.closest('h2').querySelectorAll('.ctx-btn')
+        .forEach(b => b.classList.remove('active'));
+      event.currentTarget.classList.add('active');
+      refreshWeatherCharts();
+    }
+
+    function refreshWeatherCharts() {
+      fetch('/weather/history?hours=' + _wCtxHours + '&t=' + Date.now())
+        .then(r => r.json())
+        .then(rows => {
+          const labels = rows.map(r => fmtTime(r.ts, _wCtxHours));
+          wTempChart.data.labels = labels;
+          wTempChart.data.datasets[0].data = rows.map(r => r.indoor_temp);
+          wTempChart.data.datasets[1].data = rows.map(r => r.outdoor_temp);
+          wTempChart.update();
+          wHumChart.data.labels  = labels;
+          wHumChart.data.datasets[0].data  = rows.map(r => r.indoor_humidity);
+          wHumChart.update();
+          wPresChart.data.labels = labels;
+          wPresChart.data.datasets[0].data = rows.map(r => r.pressure);
+          wPresChart.update();
+        });
+    }
+
+    refreshWeatherCharts();
+    setInterval(refreshWeatherCharts, 60000);
 
     let _ctxHours = 1;
 
