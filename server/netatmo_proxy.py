@@ -15,6 +15,7 @@ Optional .env keys:
                  considered offline (default: 600)
 """
 import os
+import sqlite3
 import subprocess
 import time
 import threading
@@ -28,7 +29,7 @@ from flask import Flask, jsonify, abort, Response, request
 
 load_dotenv()
 
-SERVER_VERSION = "1.3"
+SERVER_VERSION = "1.6"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -78,6 +79,42 @@ TOKEN_URL  = "https://api.netatmo.com/oauth2/token"
 DATA_URL   = "https://api.netatmo.com/api/getstationsdata"
 POLL_SECS  = 300
 ENV_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+DB_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics.db")
+RETAIN_DAYS = 30
+
+def _db_init():
+    with sqlite3.connect(DB_FILE) as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS metrics (
+                ts           INTEGER PRIMARY KEY,
+                cpu_percent  REAL,
+                ram_percent  REAL,
+                disk_percent REAL,
+                cpu_temp     REAL
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS metrics_ts ON metrics(ts)")
+
+def _db_insert(ts: int, cpu: float, ram: float, disk: float, temp):
+    with sqlite3.connect(DB_FILE) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO metrics VALUES (?,?,?,?,?)",
+            (ts, cpu, ram, disk, temp)
+        )
+        con.execute(
+            "DELETE FROM metrics WHERE ts < ?",
+            (ts - RETAIN_DAYS * 86400,)
+        )
+
+def _db_query(since_ts: int) -> list[dict]:
+    with sqlite3.connect(DB_FILE) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT ts, cpu_percent, ram_percent, disk_percent, cpu_temp "
+            "FROM metrics WHERE ts >= ? ORDER BY ts",
+            (since_ts,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 _lock          = threading.Lock()
 _access_token  = None
@@ -198,6 +235,16 @@ def _collect_metrics():
         data["cpu_temp"] = None
     with _metrics_lock:
         _metrics.update(data)
+    try:
+        _db_insert(
+            int(time.time()),
+            data["cpu_percent"],
+            data["ram_percent"],
+            data["disk_percent"],
+            data.get("cpu_temp"),
+        )
+    except Exception:
+        pass
 
 
 def _metrics_loop():
@@ -290,6 +337,16 @@ def log_feed():
     with _lock:
         text = "\n".join(_log_buffer) or "(no log entries yet)"
     resp = Response(text, mimetype="text/plain")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
+@app.route("/metrics/history")
+def metrics_history():
+    hours = min(int(request.args.get("hours", 1)), 24 * 30)
+    since = int(time.time()) - hours * 3600
+    rows  = _db_query(since)
+    resp  = jsonify(rows)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
 
@@ -401,6 +458,13 @@ def index():
     .warn-box strong { color: #e6edf3; }
     .warn-box ul { margin: 6px 0 0 16px; }
     .warn-box li { margin: 3px 0; color: #c9d1d9; }
+    .ctx-btn {
+      padding: 2px 8px; font-size: 11px; font-family: inherit;
+      background: #21262d; color: #8b949e; border: 1px solid #30363d;
+      border-radius: 4px; cursor: pointer;
+    }
+    .ctx-btn.active { background: #388bfd22; color: #58a6ff; border-color: #388bfd; }
+    canvas { max-width: 700px; display: block; }
     #log {
       background: #161b22; border: 1px solid #21262d; border-radius: 6px;
       padding: 16px; white-space: pre-wrap; color: #3fb950;
@@ -421,6 +485,23 @@ def index():
     <tr><td colspan="2" style="color:#8b949e">Loading…</td></tr>
   </tbody></table>
 
+  <h2>Metrics history
+    <span style="margin-left:12px">
+      <button class="ctx-btn active" onclick="setCtx(1)">1h</button>
+      <button class="ctx-btn" onclick="setCtx(6)">6h</button>
+      <button class="ctx-btn" onclick="setCtx(24)">24h</button>
+      <button class="ctx-btn" onclick="setCtx(168)">7d</button>
+    </span>
+  </h2>
+  <div style="display:flex;flex-direction:column;gap:24px;margin-bottom:24px">
+    <div><div style="color:#8b949e;font-size:11px;margin-bottom:4px">CPU %</div>
+      <canvas id="chart-cpu" height="80"></canvas></div>
+    <div><div style="color:#8b949e;font-size:11px;margin-bottom:4px">RAM %</div>
+      <canvas id="chart-ram" height="80"></canvas></div>
+    <div><div style="color:#8b949e;font-size:11px;margin-bottom:4px">Temperature °C</div>
+      <canvas id="chart-temp" height="80"></canvas></div>
+  </div>
+
   <h2>Devices</h2>
   <table id="dev-table"><tbody>
     <tr><td colspan="4" style="color:#8b949e">Loading…</td></tr>
@@ -439,7 +520,74 @@ def index():
   <h2>Log</h2>
   <div id="log">Loading…</div>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script>
+    const _chartDefaults = {
+      responsive: true, animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8b949e', maxTicksLimit: 8, font: { size: 10 } },
+             grid:  { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', font: { size: 10 } },
+             grid:  { color: '#21262d' } }
+      }
+    };
+
+    function makeChart(id, color, yMin, yMax) {
+      return new Chart(document.getElementById(id), {
+        type: 'line',
+        data: { labels: [], datasets: [{ data: [], borderColor: color,
+          borderWidth: 1.5, pointRadius: 0, fill: true,
+          backgroundColor: color + '22', tension: 0.3 }] },
+        options: { ...JSON.parse(JSON.stringify(_chartDefaults)),
+          scales: { ..._chartDefaults.scales,
+            y: { ..._chartDefaults.scales.y,
+                 min: yMin, max: yMax,
+                 ticks: { ..._chartDefaults.scales.y.ticks } } } }
+      });
+    }
+
+    const charts = {
+      cpu:  makeChart('chart-cpu',  '#58a6ff', 0, 100),
+      ram:  makeChart('chart-ram',  '#3fb950', 0, 100),
+      temp: makeChart('chart-temp', '#d29922', null, null),
+    };
+
+    let _ctxHours = 1;
+
+    function setCtx(h) {
+      _ctxHours = h;
+      document.querySelectorAll('.ctx-btn').forEach(b => b.classList.remove('active'));
+      event.target.classList.add('active');
+      refreshCharts();
+    }
+
+    function fmtTime(ts, hours) {
+      const d = new Date(ts * 1000);
+      if (hours <= 24)
+        return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+      return (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.getHours().toString().padStart(2,'0') + 'h';
+    }
+
+    function refreshCharts() {
+      fetch('/metrics/history?hours=' + _ctxHours + '&t=' + Date.now())
+        .then(r => r.json())
+        .then(rows => {
+          const labels = rows.map(r => fmtTime(r.ts, _ctxHours));
+          function update(chart, key) {
+            chart.data.labels = labels;
+            chart.data.datasets[0].data = rows.map(r => r[key] !== null ? r[key] : NaN);
+            chart.update();
+          }
+          update(charts.cpu,  'cpu_percent');
+          update(charts.ram,  'ram_percent');
+          update(charts.temp, 'cpu_temp');
+        });
+    }
+
+    refreshCharts();
+    setInterval(refreshCharts, 30000);
+
     function refreshLog() {
       fetch('/log?t=' + Date.now())
         .then(r => r.text())
@@ -564,6 +712,7 @@ def index():
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _db_init()
     _log("Netatmo proxy starting...")
     try:
         _fetch()
