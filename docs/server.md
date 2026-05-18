@@ -6,7 +6,7 @@ The proxy is a single Python script (`server/netatmo_proxy.py`) running under Fl
 
 ## Features
 
-- **Weather proxy** — polls Netatmo every 5 minutes, caches the result in memory, serves it to any device on the local network over plain HTTP
+- **Weather proxy** — polls Netatmo every 5 minutes, caches the result in memory, serves it to any device on the local network over plain HTTP; includes indoor CO2 (ppm) and noise (dB) from the base station
 - **Automatic token refresh** — Netatmo OAuth2 refresh token rotated on every poll cycle and persisted back to `.env`; never needs manual intervention
 - **Device tracking** — every `/weather` caller auto-registered by IP; named via the `X-Device-Name` request header; online/offline status based on configurable timeout
 - **Server metrics** — CPU, RAM, disk, uptime and Pi CPU temperature sampled every 15 s by a background thread
@@ -31,6 +31,8 @@ Returns the cached weather data as a flat JSON object. This is the only route di
   "city":            "Stockholm",
   "indoor_temp":     21.5,
   "indoor_humidity": 45,
+  "co2":             812,
+  "noise":           38,
   "pressure":        1013.2,
   "outdoor_temp":    8.3,
   "rain_1h":         0.0,
@@ -45,6 +47,8 @@ Returns the cached weather data as a flat JSON object. This is the only route di
 | `city` | string | `devices[0].place.city` |
 | `indoor_temp` | float °C | Base station `dashboard_data.Temperature` |
 | `indoor_humidity` | int % | Base station `dashboard_data.Humidity` |
+| `co2` | int ppm or null | Base station `dashboard_data.CO2` |
+| `noise` | int dB or null | Base station `dashboard_data.Noise` |
 | `pressure` | float hPa | Base station `dashboard_data.Pressure` |
 | `outdoor_temp` | float °C | NAModule1 `dashboard_data.Temperature` |
 | `rain_1h` | float mm (1 dp) | NAModule3 `dashboard_data.sum_rain_1` |
@@ -126,7 +130,7 @@ Returns server metrics history from the SQLite DB for the last `N` hours (max 72
 
 ### `GET /weather/history?hours=N`
 
-Returns weather history from the SQLite DB for the last `N` hours (max 720). Fields: `ts`, `indoor_temp`, `outdoor_temp`, `indoor_humidity`, `pressure`, `rain_1h`. Sampled every 5 minutes (on each Netatmo poll). Used by the status page charts.
+Returns weather history from the SQLite DB for the last `N` hours (max 720). Fields: `ts`, `indoor_temp`, `outdoor_temp`, `indoor_humidity`, `pressure`, `rain_1h`, `co2`, `noise`. Sampled every 5 minutes (on each Netatmo poll). Used by the status page charts.
 
 ---
 
@@ -153,7 +157,7 @@ Web status page — a dark-themed dashboard with the following sections:
 | Section | Update mechanism |
 |---|---|
 | Current weather | Server-rendered on page load |
-| Weather history charts | JS polls `/weather/history` every 60 s; context: 6h / 24h / 7d / 30d |
+| Weather history charts | JS polls `/weather/history` every 60 s; context: 6h / 24h / 7d / 30d; charts: indoor+outdoor temp, humidity, pressure, CO2, noise |
 | Server warnings | JS polls `/metrics` every 15 s; banner shown/hidden based on thresholds |
 | Server metrics | JS polls `/metrics` every 15 s |
 | Metrics history charts | JS polls `/metrics/history` every 30 s; context: 1h / 6h / 24h / 7d |

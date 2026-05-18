@@ -14,6 +14,7 @@
 
 | Version | Date | Notes |
 |---|---|---|
+| v1.8 | 2026-05-18 | **Indoor CO2 and noise** — `co2` (ppm) and `noise` (dB) added to `/weather` JSON from base station `dashboard_data`. Shown in weather table on status page. Persisted to SQLite with auto-migration for existing DBs. Two new charts (CO2 ppm, Noise dB) alongside the existing weather history charts. |
 | v1.7 | 2026-05-18 | **Weather history charts** — indoor/outdoor temp, humidity and pressure persisted to SQLite on every Netatmo poll. `GET /weather/history?hours=N` endpoint. Three side-by-side Chart.js charts on the status page with 6h/24h/7d/30d context buttons. Rows older than 30 days pruned automatically. |
 | v1.6 | 2026-05-18 | **Server metrics charts** — CPU %, RAM % and temperature persisted to SQLite every 15 s. `GET /metrics/history?hours=N` endpoint. Three side-by-side Chart.js charts with 1h/6h/24h/7d context buttons. Fixed progress bar rendering (missing `display:block` on fill element). |
 | v1.5 | 2026-05-17 | **Pull & Restart button** — one-click deploy from the status page. `POST /update` runs `git pull --ff-only` and schedules a service restart; no restart if already up to date. Button shows inline feedback and auto-reloads the page on success. Requires passwordless sudo for `systemctl restart netatmo-proxy`. |
