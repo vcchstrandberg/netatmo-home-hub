@@ -464,7 +464,9 @@ def index():
       border-radius: 4px; cursor: pointer;
     }
     .ctx-btn.active { background: #388bfd22; color: #58a6ff; border-color: #388bfd; }
-    canvas { max-width: 700px; display: block; }
+    .chart-row { display: flex; gap: 16px; margin-bottom: 24px; }
+    .chart-box { flex: 1; min-width: 0; }
+    .chart-box canvas { width: 100% !important; height: 120px !important; }
     #log {
       background: #161b22; border: 1px solid #21262d; border-radius: 6px;
       padding: 16px; white-space: pre-wrap; color: #3fb950;
@@ -493,13 +495,13 @@ def index():
       <button class="ctx-btn" onclick="setCtx(168)">7d</button>
     </span>
   </h2>
-  <div style="display:flex;flex-direction:column;gap:24px;margin-bottom:24px">
-    <div><div style="color:#8b949e;font-size:11px;margin-bottom:4px">CPU %</div>
-      <canvas id="chart-cpu" height="80"></canvas></div>
-    <div><div style="color:#8b949e;font-size:11px;margin-bottom:4px">RAM %</div>
-      <canvas id="chart-ram" height="80"></canvas></div>
-    <div><div style="color:#8b949e;font-size:11px;margin-bottom:4px">Temperature °C</div>
-      <canvas id="chart-temp" height="80"></canvas></div>
+  <div class="chart-row">
+    <div class="chart-box"><div style="color:#8b949e;font-size:11px;margin-bottom:4px">CPU %</div>
+      <canvas id="chart-cpu"></canvas></div>
+    <div class="chart-box"><div style="color:#8b949e;font-size:11px;margin-bottom:4px">RAM %</div>
+      <canvas id="chart-ram"></canvas></div>
+    <div class="chart-box"><div style="color:#8b949e;font-size:11px;margin-bottom:4px">Temperature °C</div>
+      <canvas id="chart-temp"></canvas></div>
   </div>
 
   <h2>Devices</h2>
@@ -523,7 +525,7 @@ def index():
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script>
     const _chartDefaults = {
-      responsive: true, animation: false,
+      responsive: true, maintainAspectRatio: false, animation: false,
       plugins: { legend: { display: false } },
       scales: {
         x: { ticks: { color: '#8b949e', maxTicksLimit: 8, font: { size: 10 } },
