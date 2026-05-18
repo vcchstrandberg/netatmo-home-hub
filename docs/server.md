@@ -11,6 +11,7 @@ The proxy is a single Python script (`server/netatmo_proxy.py`) running under Fl
 - **Device tracking** — every `/weather` caller auto-registered by IP; named via the `X-Device-Name` request header; online/offline status based on configurable timeout
 - **Server metrics** — CPU, RAM, disk, uptime and Pi CPU temperature sampled every 15 s by a background thread
 - **Threshold warnings** — a warning banner appears above the Server metrics section when any metric exceeds a threshold; yellow for high, red for critical
+- **Time-series history** — weather and server metrics persisted to SQLite (`metrics.db`); rows older than 30 days pruned automatically; charts on the status page with selectable context windows
 - **Live commit history** — reads `git log` at request time and renders a linked table on the status page
 - **Auto-deploy** — `update.sh` cron script polls GitHub every 5 minutes, pulls if there is a new commit, and restarts the service automatically
 - **Web status page** — dark-themed dashboard showing weather, device status, server metrics, commit history and scrolling live log; all sections JS-polled without page reload
@@ -117,6 +118,18 @@ Returns current server resource usage as JSON.
 
 ---
 
+### `GET /metrics/history?hours=N`
+
+Returns server metrics history from the SQLite DB for the last `N` hours (max 720). Each row matches the `/metrics` snapshot fields plus a `ts` Unix timestamp. Used by the status page charts.
+
+---
+
+### `GET /weather/history?hours=N`
+
+Returns weather history from the SQLite DB for the last `N` hours (max 720). Fields: `ts`, `indoor_temp`, `outdoor_temp`, `indoor_humidity`, `pressure`, `rain_1h`. Sampled every 5 minutes (on each Netatmo poll). Used by the status page charts.
+
+---
+
 ### `GET /log`
 
 Returns the in-memory log buffer as plain text, one entry per line. Used by the web UI JS to update the log section without page reload.
@@ -140,8 +153,10 @@ Web status page — a dark-themed dashboard with the following sections:
 | Section | Update mechanism |
 |---|---|
 | Current weather | Server-rendered on page load |
+| Weather history charts | JS polls `/weather/history` every 60 s; context: 6h / 24h / 7d / 30d |
 | Server warnings | JS polls `/metrics` every 15 s; banner shown/hidden based on thresholds |
 | Server metrics | JS polls `/metrics` every 15 s |
+| Metrics history charts | JS polls `/metrics/history` every 30 s; context: 1h / 6h / 24h / 7d |
 | Devices | JS polls `/devices` every 15 s |
 | Commit history | Server-rendered on page load (reads `git log` live) |
 | Log | JS polls `/log` every 10 s, auto-scrolls to bottom |

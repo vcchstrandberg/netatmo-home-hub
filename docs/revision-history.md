@@ -14,6 +14,8 @@
 
 | Version | Date | Notes |
 |---|---|---|
+| v1.7 | 2026-05-18 | **Weather history charts** — indoor/outdoor temp, humidity and pressure persisted to SQLite on every Netatmo poll. `GET /weather/history?hours=N` endpoint. Three side-by-side Chart.js charts on the status page with 6h/24h/7d/30d context buttons. Rows older than 30 days pruned automatically. |
+| v1.6 | 2026-05-18 | **Server metrics charts** — CPU %, RAM % and temperature persisted to SQLite every 15 s. `GET /metrics/history?hours=N` endpoint. Three side-by-side Chart.js charts with 1h/6h/24h/7d context buttons. Fixed progress bar rendering (missing `display:block` on fill element). |
 | v1.5 | 2026-05-17 | **Pull & Restart button** — one-click deploy from the status page. `POST /update` runs `git pull --ff-only` and schedules a service restart; no restart if already up to date. Button shows inline feedback and auto-reloads the page on success. Requires passwordless sudo for `systemctl restart netatmo-proxy`. |
 | v1.4 | 2026-05-17 | **Threshold warnings** — yellow/red warning banner above Server metrics when CPU temp, CPU, RAM or disk exceeds configurable thresholds. Thresholds: CPU temp warn 70 °C / crit 80 °C; CPU, RAM, disk warn 70 % / crit 90 %. Banner disappears automatically when all metrics drop below thresholds. Fixed misleading "Disk free" label to "Disk used". |
 | v1.3 | 2026-05-15 | **Log polish** — browser icon requests (`/favicon.ico`, `/apple-touch-icon`) filtered from log. Rain values rounded to 1 decimal place (fixes floating-point noise, e.g. `0.30300000000000005`). Auto-deploy cron script (`server/update.sh`) — Pi polls GitHub every 5 min and restarts on new commits. |
