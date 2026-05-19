@@ -12,6 +12,7 @@ The proxy is a single Python script (`server/netatmo_proxy.py`) running under Fl
 - **Server metrics** — CPU, RAM, disk, uptime and Pi CPU temperature sampled every 15 s by a background thread
 - **Threshold warnings** — a warning banner appears above the Server metrics section when any metric exceeds a threshold; yellow for high, red for critical
 - **Time-series history** — weather and server metrics persisted to SQLite (`metrics.db`); rows older than 30 days pruned automatically; charts on the status page with selectable context windows
+- **Weather CSV export** — `GET /weather/export?hours=N` downloads all weather fields for the selected window as a CSV file; Export button on the status page tracks the active context window
 - **Live commit history** — reads `git log` at request time and renders a linked table on the status page
 - **Auto-deploy** — `update.sh` cron script polls GitHub every 5 minutes, pulls if there is a new commit, and restarts the service automatically
 - **Web status page** — dashboard showing weather, device status, server metrics, commit history and scrolling live log; all sections JS-polled without page reload
@@ -126,6 +127,12 @@ Returns current server resource usage as JSON.
 ### `GET /metrics/history?hours=N`
 
 Returns server metrics history from the SQLite DB for the last `N` hours (max 720). Each row matches the `/metrics` snapshot fields plus a `ts` Unix timestamp. Used by the status page charts.
+
+---
+
+### `GET /weather/export?hours=N`
+
+Downloads weather history for the last `N` hours (max 720) as a CSV file. Fields: `timestamp, indoor_temp, outdoor_temp, indoor_humidity, pressure, rain_1h, co2, noise`. Timestamp formatted as `YYYY-MM-DD HH:MM:SS`. Filename: `weather_<N>h_<date>.csv`.
 
 ---
 

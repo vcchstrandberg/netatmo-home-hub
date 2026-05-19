@@ -14,6 +14,7 @@
 
 | Version | Date | Notes |
 |---|---|---|
+| v1.10 | 2026-05-19 | **Weather CSV export** — `GET /weather/export?hours=N` returns all weather fields for the selected window as a CSV download. Filename includes window and date (e.g. `weather_24h_2026-05-19.csv`). Export CSV button on the status page updates its link when the context window changes. |
 | v1.9 | 2026-05-19 | **Light/dark mode** — toggle button top-right on the status page. CSS custom properties used for all theme colors. Chart grid and tick colors update on toggle. Preference persisted in `localStorage`. |
 | v1.8 | 2026-05-18 | **Indoor CO2 and noise** — `co2` (ppm) and `noise` (dB) added to `/weather` JSON from base station `dashboard_data`. Shown in weather table on status page. Persisted to SQLite with auto-migration for existing DBs. Two new charts (CO2 ppm, Noise dB) alongside the existing weather history charts. |
 | v1.7 | 2026-05-18 | **Weather history charts** — indoor/outdoor temp, humidity and pressure persisted to SQLite on every Netatmo poll. `GET /weather/history?hours=N` endpoint. Three side-by-side Chart.js charts on the status page with 6h/24h/7d/30d context buttons. Rows older than 30 days pruned automatically. |
