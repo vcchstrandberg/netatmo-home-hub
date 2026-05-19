@@ -486,24 +486,53 @@ def index():
   <meta charset="utf-8">
   <title>Netatmo Hub</title>
   <style>
+    :root {
+      --bg:            #0d1117;
+      --bg2:           #161b22;
+      --bg3:           #21262d;
+      --border:        #21262d;
+      --border2:       #30363d;
+      --text:          #c9d1d9;
+      --text2:         #8b949e;
+      --text3:         #e6edf3;
+      --accent:        #58a6ff;
+      --log-text:      #3fb950;
+      --warn-warn-bg:  #2a2000;
+      --warn-crit-bg:  #2a0000;
+    }
+    body.light {
+      --bg:            #ffffff;
+      --bg2:           #f6f8fa;
+      --bg3:           #d0d7de;
+      --border:        #d0d7de;
+      --border2:       #d0d7de;
+      --text:          #24292f;
+      --text2:         #57606a;
+      --text3:         #1f2328;
+      --accent:        #0969da;
+      --log-text:      #116329;
+      --warn-warn-bg:  #fff8c5;
+      --warn-crit-bg:  #ffebe9;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: #0d1117; color: #c9d1d9;
+      background: var(--bg); color: var(--text);
       font-family: 'Courier New', monospace; font-size: 14px; padding: 24px;
+      transition: background 0.2s, color 0.2s;
     }
-    h1 { color: #58a6ff; margin-bottom: 4px; font-size: 20px; }
-    .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 12px; }
-    h2 { color: #8b949e; font-size: 13px; text-transform: uppercase;
+    h1 { color: var(--accent); margin-bottom: 4px; font-size: 20px; }
+    .subtitle { color: var(--text2); margin-bottom: 24px; font-size: 12px; }
+    h2 { color: var(--text2); font-size: 13px; text-transform: uppercase;
          letter-spacing: 1px; margin-bottom: 8px; margin-top: 24px; }
     table { border-collapse: collapse; width: 480px; }
-    td { padding: 5px 12px; border-bottom: 1px solid #21262d; }
-    tr td:first-child { color: #8b949e; width: 140px; }
-    tr td:last-child { color: #e6edf3; }
+    td { padding: 5px 12px; border-bottom: 1px solid var(--border); }
+    tr td:first-child { color: var(--text2); width: 140px; }
+    tr td:last-child { color: var(--text3); }
     .dot { display: inline-block; width: 8px; height: 8px;
            border-radius: 50%; margin-right: 6px; }
     .online  { background: #3fb950; }
     .offline { background: #f85149; }
-    .bar-wrap { background: #21262d; border-radius: 4px; height: 8px;
+    .bar-wrap { background: var(--bg3); border-radius: 4px; height: 8px;
                 width: 180px; display: inline-block; vertical-align: middle; }
     .bar-fill { display: block; height: 8px; border-radius: 4px; background: #238636; }
     .bar-warn { background: #d29922; }
@@ -512,28 +541,34 @@ def index():
       border-radius: 6px; padding: 10px 16px; margin-bottom: 12px;
       border-left: 4px solid; font-size: 13px;
     }
-    .warn-box.level-warn { background: #2a2000; border-color: #d29922; }
-    .warn-box.level-crit { background: #2a0000; border-color: #f85149; }
-    .warn-box strong { color: #e6edf3; }
+    .warn-box.level-warn { background: var(--warn-warn-bg); border-color: #d29922; }
+    .warn-box.level-crit { background: var(--warn-crit-bg); border-color: #f85149; }
+    .warn-box strong { color: var(--text3); }
     .warn-box ul { margin: 6px 0 0 16px; }
-    .warn-box li { margin: 3px 0; color: #c9d1d9; }
+    .warn-box li { margin: 3px 0; color: var(--text); }
     .ctx-btn {
       padding: 2px 8px; font-size: 11px; font-family: inherit;
-      background: #21262d; color: #8b949e; border: 1px solid #30363d;
+      background: var(--bg3); color: var(--text2); border: 1px solid var(--border2);
       border-radius: 4px; cursor: pointer;
     }
-    .ctx-btn.active { background: #388bfd22; color: #58a6ff; border-color: #388bfd; }
+    .ctx-btn.active { background: #388bfd22; color: var(--accent); border-color: #388bfd; }
     .chart-row { display: flex; gap: 16px; margin-bottom: 24px; }
     .chart-box { flex: 1; min-width: 0; }
     .chart-box canvas { width: 100% !important; height: 120px !important; }
     #log {
-      background: #161b22; border: 1px solid #21262d; border-radius: 6px;
-      padding: 16px; white-space: pre-wrap; color: #3fb950;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 16px; white-space: pre-wrap; color: var(--log-text);
       max-height: 480px; overflow-y: auto; font-size: 12px;
+    }
+    #theme-btn {
+      float: right; padding: 3px 10px; font-size: 11px; font-family: inherit;
+      background: var(--bg3); color: var(--text2); border: 1px solid var(--border2);
+      border-radius: 4px; cursor: pointer; margin-top: 2px;
     }
   </style>
 </head>
 <body>
+  <button id="theme-btn" onclick="toggleTheme()">Light mode</button>
   <h1>Netatmo Hub <span style="color:#8b949e;font-size:14px;font-weight:normal">v""" + SERVER_VERSION + """</span></h1>
   <div class="subtitle" id="ts">Loading…</div>
 
@@ -613,19 +648,54 @@ def index():
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script>
+    const _allCharts = [];
+
+    function _chartColors() {
+      const light = document.body.classList.contains('light');
+      return { tick: light ? '#57606a' : '#8b949e', grid: light ? '#d0d7de' : '#21262d' };
+    }
+
+    function _applyChartTheme() {
+      const c = _chartColors();
+      _allCharts.forEach(ch => {
+        ['x','y'].forEach(ax => {
+          if (ch.options.scales[ax]) {
+            ch.options.scales[ax].ticks.color = c.tick;
+            ch.options.scales[ax].grid.color  = c.grid;
+          }
+        });
+        ch.update();
+      });
+    }
+
+    function toggleTheme() {
+      const light = document.body.classList.toggle('light');
+      localStorage.setItem('theme', light ? 'light' : 'dark');
+      document.getElementById('theme-btn').textContent = light ? 'Dark mode' : 'Light mode';
+      _applyChartTheme();
+    }
+
+    (function() {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'light') {
+        document.body.classList.add('light');
+        document.getElementById('theme-btn').textContent = 'Dark mode';
+      }
+    })();
+
     const _chartDefaults = {
       responsive: true, maintainAspectRatio: false, animation: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: '#8b949e', maxTicksLimit: 8, font: { size: 10 } },
-             grid:  { color: '#21262d' } },
-        y: { ticks: { color: '#8b949e', font: { size: 10 } },
-             grid:  { color: '#21262d' } }
+        x: { ticks: { color: _chartColors().tick, maxTicksLimit: 8, font: { size: 10 } },
+             grid:  { color: _chartColors().grid } },
+        y: { ticks: { color: _chartColors().tick, font: { size: 10 } },
+             grid:  { color: _chartColors().grid } }
       }
     };
 
     function makeChart(id, color, yMin, yMax) {
-      return new Chart(document.getElementById(id), {
+      const ch = new Chart(document.getElementById(id), {
         type: 'line',
         data: { labels: [], datasets: [{ data: [], borderColor: color,
           borderWidth: 1.5, pointRadius: 0, fill: true,
@@ -636,6 +706,8 @@ def index():
                  min: yMin, max: yMax,
                  ticks: { ..._chartDefaults.scales.y.ticks } } } }
       });
+      _allCharts.push(ch);
+      return ch;
     }
 
     const charts = {
@@ -644,7 +716,7 @@ def index():
       temp: makeChart('chart-temp', '#d29922', null, null),
     };
 
-    const wTempChart = new Chart(document.getElementById('chart-w-temp'), {
+    const wTempChart = _allCharts[_allCharts.push(new Chart(document.getElementById('chart-w-temp'), {
       type: 'line',
       data: { labels: [], datasets: [
         { label: 'Indoor', data: [], borderColor: '#f78166', borderWidth: 1.5,
@@ -655,7 +727,7 @@ def index():
       options: { ...JSON.parse(JSON.stringify(_chartDefaults)),
         plugins: { legend: { display: false } },
         maintainAspectRatio: false }
-    });
+    })) - 1];
     const wHumChart   = makeChart('chart-w-hum',   '#3fb950', 0, 100);
     const wPresChart  = makeChart('chart-w-pres',  '#a371f7', null, null);
     const wCo2Chart   = makeChart('chart-w-co2',   '#f0883e', null, null);
