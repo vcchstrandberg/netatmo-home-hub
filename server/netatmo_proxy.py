@@ -29,7 +29,7 @@ from flask import Flask, jsonify, abort, Response, request
 
 load_dotenv()
 
-SERVER_VERSION = "1.8"
+SERVER_VERSION = "1.9"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
