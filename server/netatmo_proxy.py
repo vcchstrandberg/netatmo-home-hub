@@ -14,6 +14,8 @@ Optional .env keys:
   DEVICE_TIMEOUT Seconds without a /weather call before a device is
                  considered offline (default: 600)
 """
+import csv
+import io
 import os
 import sqlite3
 import subprocess
@@ -398,6 +400,30 @@ def weather_history():
     return resp
 
 
+@app.route("/weather/export")
+def weather_export():
+    hours = min(int(request.args.get("hours", 24)), 24 * 30)
+    since = int(time.time()) - hours * 3600
+    rows  = _db_query_weather(since)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["timestamp", "indoor_temp", "outdoor_temp",
+                     "indoor_humidity", "pressure", "rain_1h", "co2", "noise"])
+    for r in rows:
+        writer.writerow([
+            datetime.fromtimestamp(r["ts"]).strftime("%Y-%m-%d %H:%M:%S"),
+            r["indoor_temp"], r["outdoor_temp"], r["indoor_humidity"],
+            r["pressure"], r["rain_1h"], r["co2"], r["noise"],
+        ])
+
+    filename = f"weather_{hours}h_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    resp = Response(buf.getvalue(), mimetype="text/csv")
+    resp.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
 @app.route("/metrics/history")
 def metrics_history():
     hours = min(int(request.args.get("hours", 1)), 24 * 30)
@@ -582,6 +608,12 @@ def index():
       <button class="ctx-btn" onclick="setWCtx(168)">7d</button>
       <button class="ctx-btn" onclick="setWCtx(720)">30d</button>
     </span>
+    <a id="export-btn" href="/weather/export?hours=24"
+      style="margin-left:12px;padding:2px 10px;font-size:11px;font-family:inherit;
+             background:var(--bg3);color:var(--text2);border:1px solid var(--border2);
+             border-radius:4px;cursor:pointer;text-decoration:none">
+      Export CSV
+    </a>
   </h2>
   <div class="chart-row">
     <div class="chart-box">
@@ -740,6 +772,7 @@ def index():
       event.currentTarget.closest('h2').querySelectorAll('.ctx-btn')
         .forEach(b => b.classList.remove('active'));
       event.currentTarget.classList.add('active');
+      document.getElementById('export-btn').href = '/weather/export?hours=' + h;
       refreshWeatherCharts();
     }
 
