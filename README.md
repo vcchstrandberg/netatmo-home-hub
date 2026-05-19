@@ -33,9 +33,13 @@ All OLED boards use U8g2. The Waveshare uses LovyanGFX for its integrated TFT.
 - **Error hold** — display stays on the error screen until the hub reconnects; stale data is never re-shown after a lost connection
 
 ### Server (Raspberry Pi)
-- **Web status page** — `http://netatmo-hub.local:8080/` with weather, device status, server metrics, live commit history and scrolling log
+- **Web status page** — `http://netatmo-hub.local:8080/` with weather, device status, server metrics, history charts, live commit history and scrolling log; light/dark mode toggle
+- **Indoor air quality** — CO2 (ppm) and noise (dB) fetched from the Netatmo base station alongside temperature, humidity and pressure
 - **Device tracking** — every `/weather` caller auto-registered by IP; named via `X-Device-Name` header; online/offline indicator with last-seen time and poll count
-- **Server metrics** — CPU usage, RAM, free disk space, uptime and Pi CPU temperature; colour-coded progress bars updated every 15 s
+- **Server metrics** — CPU usage, RAM, disk, uptime and Pi CPU temperature; colour-coded progress bars and threshold warning banner (yellow/red) updated every 15 s
+- **Time-series history** — weather and server metrics persisted to SQLite; side-by-side Chart.js charts with 1h/6h/24h/7d/30d context buttons
+- **Weather CSV export** — download any time window as a CSV file directly from the status page
+- **Pull & Restart button** — one-click deploy from the status page; runs `git pull` and restarts the service
 - **Live commit history** — git log table on the status page, commit hashes linked to GitHub
 - **Auto-deploy** — Pi polls GitHub every 5 minutes via cron; pulls and restarts automatically on new commits
 - **Systemd service** — auto-starts on Pi boot, restarts on failure, logs to journald
@@ -102,11 +106,15 @@ After setup, the Pi exposes these routes:
 
 | Route | Description |
 |---|---|
-| `GET /weather` | Flat JSON — all weather fields |
+| `GET /weather` | Flat JSON — all weather fields including CO2 and noise |
 | `GET /health` | `{"ok": true, "has_data": true}` |
 | `GET /devices` | JSON array of known devices with online status |
 | `GET /metrics` | JSON with CPU, RAM, disk, uptime, temperature |
+| `GET /metrics/history?hours=N` | Server metrics history from SQLite (max 720 h) |
+| `GET /weather/history?hours=N` | Weather history from SQLite (max 720 h) |
+| `GET /weather/export?hours=N` | Weather history as a CSV download |
 | `GET /log` | Plain-text rolling log (for JS polling) |
+| `POST /update` | Run `git pull` and restart the service |
 | `GET /` | Web status page |
 
 ### 2. Flash a device
@@ -144,6 +152,8 @@ pio run -e esp32c6_waveshare_lcd  --target upload
   "city":            "Stockholm",
   "indoor_temp":     21.5,
   "indoor_humidity": 45,
+  "co2":             812,
+  "noise":           38,
   "pressure":        1013.2,
   "outdoor_temp":    8.3,
   "rain_1h":         0.0,
