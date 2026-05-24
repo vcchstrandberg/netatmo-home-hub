@@ -4,6 +4,8 @@ A Raspberry Pi acts as a local OAuth hub: it handles all Netatmo token managemen
 
 **Why this exists:** Netatmo allows only 2 registered apps per account. With [`netatmo-weather-api`](https://github.com/vcchstrandberg/netatmo-weather-api), each device needs its own token pair and those tokens are shared. With netatmo-home-hub, the Pi holds the single set of credentials and every device gets the data over plain HTTP — no TLS, no tokens, no OAuth on any device.
 
+> **Firmware now lives in a separate repo:** [home-hub-firmware](https://github.com/vcchstrandberg/home-hub-firmware). This repo is the server side only.
+
 ---
 
 ## Supported boards
@@ -75,15 +77,6 @@ netatmo-home-hub/
 │   ├── netatmo-proxy.service            ← systemd unit
 │   ├── setup.sh                         ← One-shot install script
 │   └── update.sh                        ← Auto-deploy script (run from cron)
-├── firmware/                            ← PlatformIO project for display devices
-│   ├── platformio.ini
-│   ├── src/main.cpp                     ← Single source file, all boards
-│   ├── scripts/version.py               ← Injects git commit hash at build time
-│   └── include/
-│       ├── esp32cam/                    ← arduino_secrets.h (gitignored)
-│       ├── esp32dev/                    ← arduino_secrets.h (gitignored)
-│       ├── uno_r4_wifi/                 ← arduino_secrets.h (gitignored)
-│       └── esp32c6_waveshare_lcd/       ← arduino_secrets.h + LGFX_config.h
 └── docs/
     ├── architecture.md                  ← System overview and Mermaid diagrams
     ├── configuration.md                 ← Credentials, build, flash
@@ -93,6 +86,8 @@ netatmo-home-hub/
     ├── wiring.md                        ← Pin connections for all boards
     └── revision-history.md              ← Version log
 ```
+
+Firmware lives in the [home-hub-firmware](https://github.com/vcchstrandberg/home-hub-firmware) repo.
 
 ---
 
@@ -119,31 +114,7 @@ After setup, the Pi exposes these routes:
 
 ### 2. Flash a device
 
-```bash
-cd firmware
-
-# Copy the example secrets file for your board (ESP32-CAM shown):
-cp include/esp32cam/arduino_secrets.h.example include/esp32cam/arduino_secrets.h
-```
-
-Edit the secrets file — five values:
-
-```cpp
-#define SECRET_SSID  "your-wifi-ssid"
-#define SECRET_PASS  "your-wifi-password"
-#define PROXY_HOST   "netatmo-hub.local"   // or Pi's IP address
-#define PROXY_PORT   8080
-#define DEVICE_NAME  "ESP32-CAM"           // shown on the hub status page
-```
-
-Build and upload:
-
-```bash
-pio run -e esp32cam               --target upload
-pio run -e esp32dev               --target upload
-pio run -e uno_r4_wifi            --target upload
-pio run -e esp32c6_waveshare_lcd  --target upload
-```
+See [home-hub-firmware](https://github.com/vcchstrandberg/home-hub-firmware) for build and flash instructions. Each device needs an `arduino_secrets.h` with your Wi-Fi credentials and this hub's URL.
 
 ### 3. Proxy JSON response format
 
