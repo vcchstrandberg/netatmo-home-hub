@@ -1,8 +1,10 @@
-# Configuration and Setup
+# Server Configuration
+
+This document covers Pi-side setup. Device/firmware configuration (board secrets, building, flashing, serial monitor) lives in the firmware repo: [home-hub-firmware/docs/configuration.md](https://github.com/vcchstrandberg/home-hub-firmware/blob/main/docs/configuration.md).
+
+---
 
 ## File structure
-
-After cloning, the project looks like this before building:
 
 ```
 netatmo-home-hub/
@@ -13,24 +15,10 @@ netatmo-home-hub/
 │   ├── netatmo-proxy.service
 │   ├── setup.sh
 │   └── update.sh                    ← auto-deploy cron script
-├── firmware/
-│   ├── platformio.ini
-│   ├── src/main.cpp
-│   ├── scripts/version.py
-│   └── include/
-│       ├── esp32cam/
-│       │   └── arduino_secrets.h    ← you create this (gitignored)
-│       ├── esp32dev/
-│       │   └── arduino_secrets.h    ← you create this (gitignored)
-│       ├── uno_r4_wifi/
-│       │   └── arduino_secrets.h    ← you create this (gitignored)
-│       └── esp32c6_waveshare_lcd/
-│           ├── LGFX_config.h        ← LovyanGFX pin / panel config (committed)
-│           └── arduino_secrets.h    ← you create this (gitignored)
 └── docs/
 ```
 
-Secrets files are listed in `.gitignore` — they are never pushed to GitHub.
+`.env` is gitignored — credentials never reach GitHub.
 
 ---
 
@@ -59,140 +47,8 @@ PORT=8080
 
 ---
 
-## Device credentials (arduino_secrets.h)
+## Next steps
 
-Create the secrets file for your board in its include directory:
-
-| Board | Secrets file path |
-|---|---|
-| AI-Thinker ESP32-CAM | `include/esp32cam/arduino_secrets.h` |
-| ESP32 DevKit | `include/esp32dev/arduino_secrets.h` |
-| Arduino Uno R4 WiFi | `include/uno_r4_wifi/arduino_secrets.h` |
-| Waveshare ESP32-C6 | `include/esp32c6_waveshare_lcd/arduino_secrets.h` |
-
-All four files use the same format — five values:
-
-```cpp
-#pragma once
-
-#define SECRET_SSID  "your-wifi-ssid"
-#define SECRET_PASS  "your-wifi-password"
-#define PROXY_HOST   "netatmo-hub.local"   // or Pi's IP address
-#define PROXY_PORT   8080
-#define DEVICE_NAME  "my-device"           // shown on the hub status page
-```
-
-`PROXY_HOST` can be either the mDNS hostname (`netatmo-hub.local`) or the Pi's IP address. If mDNS is unreliable on your network, use the IP address and assign a static DHCP lease for the Pi in your router — see [raspberry-pi-setup.md](raspberry-pi-setup.md).
-
-`DEVICE_NAME` is sent as the `X-Device-Name` HTTP header on every `/weather` request. The hub uses it to label each device on the status page. If you reflash with a new name, the hub picks it up immediately on the next poll — no server config needed.
-
----
-
-## Locale and units
-
-Locale is selected at compile time via `platformio.ini` build flags, and can also be changed at runtime with the locale button. Four locales are built into every firmware image — the build flag sets only the default.
-
-To change the compile-time default, edit the `build_flags` in `platformio.ini`:
-
-```ini
--DDEFAULT_LOCALE=1    ; 0=sv-SE, 1=en-US, 2=en-GB, 3=fr-FR
-```
-
-| Index | Locale | Language | Temp | Pressure | Rain |
-|---|---|---|---|---|---|
-| 0 | `sv-SE` | Svenska | °C | hPa | mm |
-| 1 | `en-US` | English (US) | °F | inHg | in |
-| 2 | `en-GB` | English (UK) | °C | hPa | mm |
-| 3 | `fr-FR` | Français | °C | hPa | mm |
-
-The city name is pulled from the Netatmo API and shown on the outdoor card (OLED) or header (C6 TFT).
-
----
-
-## Building and flashing
-
-Install PlatformIO Core if you haven't already:
-
-```bash
-pip install platformio
-```
-
-From the `firmware/` directory:
-
-```bash
-# Compile only — verify the build
-pio run -e esp32cam
-pio run -e esp32dev
-pio run -e uno_r4_wifi
-pio run -e esp32c6_waveshare_lcd
-
-# Compile and upload to connected board
-pio run -e esp32cam               --target upload
-pio run -e esp32dev               --target upload
-pio run -e uno_r4_wifi            --target upload
-pio run -e esp32c6_waveshare_lcd  --target upload
-```
-
-The first build for each environment downloads the required toolchain and libraries automatically. The Waveshare build fetches the pioarduino platform which includes arduino-esp32 3.x (~300 MB, one-time).
-
----
-
-## ESP32-CAM flashing
-
-The ESP32-CAM has no USB port — it requires a USB-to-serial adapter (FTDI or CH340) wired to its UART0 pins (GPIO1/GPIO3).
-
-To enter bootloader mode before uploading:
-1. Connect **IO0 → GND**.
-2. Press **RST** (or briefly disconnect and reconnect power).
-3. Run `pio run -e esp32cam --target upload`.
-4. After upload completes, **disconnect IO0 from GND** and press RST to boot normally.
-
----
-
-## Finding the USB port
-
-**macOS / Linux:**
-```bash
-ls /dev/cu.usbmodem*   # macOS
-ls /dev/ttyACM*        # Linux
-```
-Plug in the board, run the command, then unplug and run again — the entry that disappears is your board.
-
-**Windows:** Device Manager → **Ports (COM & LPT)**.
-
-PlatformIO auto-detects the port when exactly one board is connected. If detection fails:
-
-```bash
-pio run -e uno_r4_wifi --target upload --upload-port /dev/cu.usbmodemF0F5BD51B13C2
-```
-
----
-
-## Serial monitor
-
-Each board prints boot diagnostics and runtime status at 115200 baud:
-
-```bash
-pio device monitor -e esp32cam
-pio device monitor -e esp32dev
-pio device monitor -e uno_r4_wifi
-pio device monitor -e esp32c6_waveshare_lcd
-```
-
-Press **Ctrl-C** to exit. Typical output after boot:
-
-```
-=== Boot ===
-Connecting to: YourWiFi
-City: Stockholm
-In: 21.50  Out: 8.30
-```
-
-On fetch failure:
-```
-Proxy connect failed
-```
-or
-```
-Proxy HTTP 503
-```
+- Pi install and systemd service → [raspberry-pi-setup.md](raspberry-pi-setup.md)
+- Routes and behavior reference → [server.md](server.md)
+- Device firmware configuration → [home-hub-firmware/docs/configuration.md](https://github.com/vcchstrandberg/home-hub-firmware/blob/main/docs/configuration.md)

@@ -79,12 +79,10 @@ netatmo-home-hub/
 │   └── update.sh                        ← Auto-deploy script (run from cron)
 └── docs/
     ├── architecture.md                  ← System overview and Mermaid diagrams
-    ├── configuration.md                 ← Credentials, build, flash
-    ├── display-layout.md                ← Display card designs (OLED + TFT)
+    ├── configuration.md                 ← Pi credentials (.env)
     ├── raspberry-pi-setup.md            ← Step-by-step Pi setup
     ├── server.md                        ← Proxy API reference, web UI, features
-    ├── wiring.md                        ← Pin connections for all boards
-    └── revision-history.md              ← Version log
+    └── revision-history.md              ← Server version log
 ```
 
 Firmware lives in the [home-hub-firmware](https://github.com/vcchstrandberg/home-hub-firmware) repo.
@@ -140,13 +138,19 @@ See [home-hub-firmware](https://github.com/vcchstrandberg/home-hub-firmware) for
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — system overview, proxy internals, boot sequence, main loop, data flow
-- [Configuration](docs/configuration.md) — credentials, building, flashing, serial monitor
-- [Display layout](docs/display-layout.md) — OLED card designs and C6 full dashboard
+### Server (this repo)
+- [Architecture](docs/architecture.md) — system overview, proxy internals, data flow
+- [Configuration](docs/configuration.md) — Pi `.env` credentials
 - [Raspberry Pi setup](docs/raspberry-pi-setup.md) — OS flashing, SSH, systemd service
 - [Server reference](docs/server.md) — proxy features, routes, token refresh, web UI, auto-deploy
-- [Wiring](docs/wiring.md) — pin connections for all boards
-- [Revision history](docs/revision-history.md) — version log
+- [Revision history](docs/revision-history.md) — server version log
+
+### Firmware ([home-hub-firmware](https://github.com/vcchstrandberg/home-hub-firmware))
+- [Configuration](https://github.com/vcchstrandberg/home-hub-firmware/blob/main/docs/configuration.md) — board secrets, building, flashing, serial monitor
+- [Display layout](https://github.com/vcchstrandberg/home-hub-firmware/blob/main/docs/display-layout.md) — OLED card designs and C6 LVGL dashboard (landscape + portrait)
+- [Wiring](https://github.com/vcchstrandberg/home-hub-firmware/blob/main/docs/wiring.md) — pin connections per board
+- [Production readiness](https://github.com/vcchstrandberg/home-hub-firmware/blob/main/docs/production-readiness.md) — WiFi provisioning + OTA paths
+- [Revision history](https://github.com/vcchstrandberg/home-hub-firmware/blob/main/docs/revision-history.md) — firmware version log
 
 ---
 

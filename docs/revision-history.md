@@ -1,14 +1,6 @@
-# Revision History
+# Server Revision History
 
-## Firmware
-
-| Version | Commit | Date | Notes |
-|---|---|---|---|
-| v1.2 | [`f648a48`](../../commit/f648a48) | 2026-05-15 | **Device naming** — `DEVICE_NAME` added to `arduino_secrets.h`. Sent as `X-Device-Name` HTTP header on every `/weather` request so the hub can display human-readable device names without any server-side config. |
-| v1.1 | [`3572996`](../../commit/3572996) | 2026-05-15 | **Error hold** — display stays on the error screen until the hub reconnects. Previously `g_hasData` stayed `true` on fetch failure, causing stale data to reappear immediately after the error flash. All failure paths now set `g_hasData = false`; `parseWeather()` is the only place that sets it back to `true`. Card timer reset on reconnect. |
-| v1.0 | [`83caa52`](../../commit/83caa52) | 2026-05-14 | **Initial release** — always-on polling hub firmware for all four boards. Plain HTTP to the Pi proxy (no TLS, no tokens on device). C6 full dashboard (thermometer graphics, rain dots, indoor/outdoor panels). 3-card OLED cycling for ESP32-CAM, ESP32 DevKit, Uno R4 WiFi. Multi-locale with runtime switching. |
-
----
+Firmware revision history lives in the [firmware repo](https://github.com/vcchstrandberg/home-hub-firmware/blob/main/docs/revision-history.md).
 
 ## Server (netatmo_proxy.py)
 
@@ -28,6 +20,10 @@
 
 ---
 
+## Repo split
+
+On 2026-05-24 the firmware was extracted into a dedicated repo: [vcchstrandberg/home-hub-firmware](https://github.com/vcchstrandberg/home-hub-firmware). All commits before that date in `firmware/` of this repo are still in this repo's history; ongoing firmware work happens in the new repo.
+
 ## Relationship to netatmo-weather-api
 
 This repo was forked from [`netatmo-weather-api`](https://github.com/vcchstrandberg/netatmo-weather-api) at around v1.4 of that project. Key differences introduced at the fork:
@@ -37,9 +33,3 @@ This repo was forked from [`netatmo-weather-api`](https://github.com/vcchstrandb
 - `Preferences` / NVS token storage removed from all device firmware
 - `HTTPClient` HTTPS replaced with plain HTTP `WiFiClient` on non-ESP32 boards
 - C6 display redesigned from 3-card cycling to single full dashboard
-
-To restore a specific version locally:
-
-```bash
-git checkout 83caa52   # example: firmware v1.0 / server v1.0
-```
