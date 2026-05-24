@@ -34,14 +34,42 @@ private:
   uint16_t _bg    = TFT_BLACK;
 
   // Map TFT_eSPI font numbers (2/4/6) to Arduino_GFX setTextSize multipliers.
-  // Default GFX font is 6x8 px; size 2 -> ~16px tall (matches font 2),
-  // size 3 -> ~24px (font 4), size 6 -> ~48px (font 6).
+  // Default GFX font is 6x8 px. Size 4 for font 6 keeps the big temperature
+  // numbers within a single column (size 6 overflowed into the adjacent column).
   static uint8_t sizeForFont(uint8_t f) {
-    if (f >= 6) return 6;
+    if (f >= 6) return 4;
     if (f >= 4) return 3;
     return 2;
   }
   static uint8_t charWForFont(uint8_t f) { return 6 * sizeForFont(f); }
+
+  // Replace UTF-8 Swedish/Latin-1 accents with ASCII equivalents in-place into dst.
+  // The Arduino_GFX classic font's codepage doesn't have ä/å/ö glyphs at the
+  // expected positions, so multi-byte UTF-8 renders as garbage otherwise.
+  static String stripAccents(const char* src) {
+    String out;
+    out.reserve(strlen(src));
+    for (const unsigned char* p = (const unsigned char*)src; *p; ++p) {
+      if (*p == 0xC3 && p[1]) {
+        unsigned char c = p[1];
+        char r = '?';
+        switch (c) {
+          case 0x84: r = 'A'; break;  // Ä
+          case 0x85: r = 'A'; break;  // Å
+          case 0x96: r = 'O'; break;  // Ö
+          case 0xA4: r = 'a'; break;  // ä
+          case 0xA5: r = 'a'; break;  // å
+          case 0xB6: r = 'o'; break;  // ö
+          default:   r = '?'; break;
+        }
+        out += r;
+        ++p;  // skip second byte
+      } else {
+        out += (char)*p;
+      }
+    }
+    return out;
+  }
 
   void runRegInit() {
     static const uint8_t init_operations[] = {
@@ -151,6 +179,10 @@ public:
   void init() {
     _gfx->begin();
     runRegInit();
+    // Without this, text that overflows its column wraps to x=0 on the next
+    // line and contaminates other UI regions (e.g. pressure unit "hPa" landing
+    // under the indoor humidity label).
+    _gfx->setTextWrap(false);
   }
 
   void setRotation(uint8_t r) { _gfx->setRotation(r); }
@@ -167,16 +199,17 @@ public:
   void setTextDatum(uint8_t d)                      { _datum = d; }
   void setTextColor(uint16_t fg, uint16_t bg)       { _fg = fg; _bg = bg; }
 
-  int textWidth(const char* s)        { return (int)strlen(s) * charWForFont(_font); }
-  int textWidth(const String& s)      { return (int)s.length() * charWForFont(_font); }
+  int textWidth(const char* s)   { return (int)stripAccents(s).length() * charWForFont(_font); }
+  int textWidth(const String& s) { return textWidth(s.c_str()); }
 
   void drawString(const char* s, int x, int y) {
-    int w = textWidth(s);
+    String clean = stripAccents(s);
+    int w = (int)clean.length() * charWForFont(_font);
     if (_datum == TR_DATUM) x -= w;
     _gfx->setCursor(x, y);
     _gfx->setTextColor(_fg, _bg);
     _gfx->setTextSize(sizeForFont(_font));
-    _gfx->print(s);
+    _gfx->print(clean);
   }
   void drawString(const String& s, int x, int y) { drawString(s.c_str(), x, y); }
 };
