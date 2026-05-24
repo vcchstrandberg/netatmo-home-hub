@@ -12,7 +12,6 @@
 
 #ifdef WAVESHARE_ESP32C6_LCD
 #  include "LGFX_config.h"
-#  include <LGFX_TFT_eSPI.hpp>
 #  include <WiFi.h>
 #  include <HTTPClient.h>
 #  define BUTTON_PIN 9
@@ -108,7 +107,8 @@ int status = WL_IDLE_STATUS;
 
 // ── Display objects ───────────────────────────────────────────────────────────
 #ifdef WAVESHARE_ESP32C6_LCD
-TFT_eSPI tft;
+static LGFX* _tft_ptr = nullptr;
+#define tft (*_tft_ptr)
 static const uint16_t CARD_COLOR[] = { 0xFB60, 0x235F, 0x03DF };
 #elif !defined(NO_DISPLAY)
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
@@ -164,9 +164,12 @@ void setup()
   Serial.println("=== Boot ===");
 
 #ifdef WAVESHARE_ESP32C6_LCD
+  { static LGFX _tft_instance; _tft_ptr = &_tft_instance; }
+  tft.init();
+  // BL must be turned on AFTER tft.init() — the JD9853 internal regulator
+  // that powers the backlight LED is only enabled by the init register sequence.
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
-  tft.init();
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
   tft.setTextDatum(TL_DATUM);
