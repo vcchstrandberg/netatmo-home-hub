@@ -1157,7 +1157,8 @@ def index():
         });
     }
 
-    document.getElementById('dev-show-blocked').addEventListener('change', refreshDevices);
+    const _devShowBlocked = document.getElementById('dev-show-blocked');
+    if (_devShowBlocked) _devShowBlocked.addEventListener('change', refreshDevices);
 
     refreshLog();
     refreshDevices();
