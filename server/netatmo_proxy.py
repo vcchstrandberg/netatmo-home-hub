@@ -1018,7 +1018,8 @@ def index():
     }
 
     function refreshDevices() {
-      const showBlocked = document.getElementById('dev-show-blocked').checked;
+      const cb = document.getElementById('dev-show-blocked');
+      const showBlocked = cb && cb.checked;
       const url = '/devices?t=' + Date.now() + (showBlocked ? '&include_blocked=1' : '');
       fetch(url)
         .then(r => r.json())
@@ -1028,38 +1029,82 @@ def index():
             tbody.innerHTML = '<tr><td colspan="5" style="color:#8b949e">No devices seen yet</td></tr>';
             return;
           }
-          tbody.innerHTML = devs.map(d => {
-            const dot   = '<span class="dot ' + (d.online ? 'online' : 'offline') + '"></span>';
-            const rowStyle = d.blocked ? ' style="opacity:0.55"' : '';
-            const name = escapeHtml(d.name);
-            const meta = '<span style="color:#8b949e;font-size:11px">' +
-                         escapeHtml(d.ip || '-') + ' · ' + escapeHtml(d.mac) +
-                         (d.blocked ? ' · <span style="color:#f85149">blocked</span>' : '') +
-                         '</span>';
-            const nameCell =
-              '<input class="dev-name" data-id="' + d.id + '" value="' + name + '" ' +
-                'style="background:transparent;border:1px solid transparent;color:inherit;' +
-                'font:inherit;padding:2px 4px;border-radius:3px;width:180px" ' +
-                'onfocus="this.style.borderColor=\'#30363d\'" ' +
-                'onblur="renameDevice(' + d.id + ', this)" ' +
-                'onkeydown="if(event.key===\'Enter\')this.blur();' +
-                'if(event.key===\'Escape\'){this.value=this.defaultValue;this.blur();}">';
-            const blockBtn = d.blocked
-              ? '<button class="dev-btn" onclick="unblockDevice(' + d.id + ')">Unblock</button>'
-              : '<button class="dev-btn" onclick="blockDevice(' + d.id + ')">Block</button>';
-            const removeBtn = '<button class="dev-btn dev-btn-del" title="Remove" onclick="removeDevice(' + d.id + ')">×</button>';
-            const count = d.count + ' poll' + (d.count !== 1 ? 's' : '');
-            return '<tr' + rowStyle + '><td>' + dot + nameCell + '<br>' + meta +
-                   '</td><td>' + d.ago +
-                   '</td><td>' + count +
-                   '</td><td style="text-align:right">' + blockBtn + ' ' + removeBtn + '</td></tr>';
-          }).join('');
+          tbody.innerHTML = '';
+          devs.forEach(function(d) {
+            const tr = document.createElement('tr');
+            if (d.blocked) tr.style.opacity = '0.55';
+
+            const tdMain = document.createElement('td');
+            const dot = document.createElement('span');
+            dot.className = 'dot ' + (d.online ? 'online' : 'offline');
+            tdMain.appendChild(dot);
+
+            const input = document.createElement('input');
+            input.className = 'dev-name';
+            input.value = d.name;
+            input.defaultValue = d.name;
+            input.dataset.id = d.id;
+            input.style.background = 'transparent';
+            input.style.border = '1px solid transparent';
+            input.style.color = 'inherit';
+            input.style.font = 'inherit';
+            input.style.padding = '2px 4px';
+            input.style.borderRadius = '3px';
+            input.style.width = '180px';
+            input.addEventListener('focus', function() { this.style.borderColor = '#30363d'; });
+            input.addEventListener('blur',  function() { this.style.borderColor = 'transparent'; renameDevice(d.id, this); });
+            input.addEventListener('keydown', function(ev) {
+              if (ev.key === 'Enter') this.blur();
+              if (ev.key === 'Escape') { this.value = this.defaultValue; this.blur(); }
+            });
+            tdMain.appendChild(input);
+            tdMain.appendChild(document.createElement('br'));
+
+            const meta = document.createElement('span');
+            meta.style.color = '#8b949e';
+            meta.style.fontSize = '11px';
+            meta.textContent = (d.ip || '-') + ' · ' + d.mac;
+            if (d.blocked) {
+              const tag = document.createElement('span');
+              tag.style.color = '#f85149';
+              tag.textContent = ' · blocked';
+              meta.appendChild(tag);
+            }
+            tdMain.appendChild(meta);
+            tr.appendChild(tdMain);
+
+            const tdAgo   = document.createElement('td'); tdAgo.textContent   = d.ago;                                                   tr.appendChild(tdAgo);
+            const tdCount = document.createElement('td'); tdCount.textContent = d.count + ' poll' + (d.count !== 1 ? 's' : '');         tr.appendChild(tdCount);
+
+            const tdBtns = document.createElement('td');
+            tdBtns.style.textAlign = 'right';
+            const blockBtn = document.createElement('button');
+            blockBtn.className = 'dev-btn';
+            blockBtn.textContent = d.blocked ? 'Unblock' : 'Block';
+            blockBtn.addEventListener('click', function() {
+              (d.blocked ? unblockDevice : blockDevice)(d.id);
+            });
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'dev-btn dev-btn-del';
+            removeBtn.title = 'Remove';
+            removeBtn.textContent = '×';
+            removeBtn.addEventListener('click', function() { removeDevice(d.id); });
+            tdBtns.appendChild(blockBtn);
+            tdBtns.appendChild(document.createTextNode(' '));
+            tdBtns.appendChild(removeBtn);
+            tr.appendChild(tdBtns);
+
+            tbody.appendChild(tr);
+          });
+        })
+        .catch(function(e) {
+          const tbody = document.querySelector('#dev-table tbody');
+          tbody.innerHTML = '<tr><td colspan="5" style="color:#f85149">Fetch error: ' + e + '</td></tr>';
         });
     }
 
     function renameDevice(id, input) {
       const newName = input.value.trim();
-      input.style.borderColor = 'transparent';
       if (!newName || newName === input.defaultValue) {
         input.value = input.defaultValue;
         return;
@@ -1068,10 +1113,10 @@ def index():
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({name: newName}),
-      }).then(r => r.json()).then(j => {
+      }).then(function(r) { return r.json(); }).then(function(j) {
         if (j.ok) { input.defaultValue = newName; }
         else { input.value = input.defaultValue; }
-      }).catch(() => { input.value = input.defaultValue; });
+      }).catch(function() { input.value = input.defaultValue; });
     }
 
     function blockDevice(id)   { fetch('/devices/' + id + '/block',   {method:'POST'}).then(refreshDevices); }
