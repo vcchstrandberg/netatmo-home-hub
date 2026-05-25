@@ -31,7 +31,7 @@ from flask import Flask, jsonify, abort, Response, request
 
 load_dotenv()
 
-SERVER_VERSION = "1.10"
+SERVER_VERSION = "1.11"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -114,6 +114,19 @@ def _db_init():
                 con.execute(f"ALTER TABLE weather_history ADD COLUMN {col} {typ}")
             except sqlite3.OperationalError:
                 pass  # column already exists
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS devices (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                mac           TEXT    UNIQUE NOT NULL,
+                friendly_name TEXT    NOT NULL,
+                last_ip       TEXT,
+                first_seen    INTEGER NOT NULL,
+                last_seen     INTEGER NOT NULL,
+                count         INTEGER NOT NULL DEFAULT 0,
+                blocked       INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen)")
 
 def _db_insert(ts: int, cpu: float, ram: float, disk: float, temp):
     with sqlite3.connect(DB_FILE) as con:
@@ -159,13 +172,78 @@ def _db_query(since_ts: int) -> list[dict]:
         ).fetchall()
     return [dict(r) for r in rows]
 
+# ── Device DAO ───────────────────────────────────────────────────────────────
+# Devices are keyed on MAC address (sent as X-Device-Id by firmware ≥ v1.6).
+# Friendly name is server-owned: initial value comes from the firmware's
+# X-Device-Name or an auto-generated suffix, but subsequent renames in the
+# web UI take precedence and persist across reflashes and server restarts.
+
+def _db_device_upsert(mac: str, initial_name: str, ip: str, ts: int) -> dict:
+    """Register a touch from device `mac`. Inserts a new row on first sight
+    (using `initial_name` as the friendly name), updates last_ip/last_seen/
+    count otherwise. Returns the current row."""
+    with sqlite3.connect(DB_FILE) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute("SELECT * FROM devices WHERE mac=?", (mac,)).fetchone()
+        if row is None:
+            con.execute(
+                "INSERT INTO devices (mac, friendly_name, last_ip, first_seen, last_seen, count) "
+                "VALUES (?, ?, ?, ?, ?, 1)",
+                (mac, initial_name, ip, ts, ts),
+            )
+            row = con.execute("SELECT * FROM devices WHERE mac=?", (mac,)).fetchone()
+        else:
+            con.execute(
+                "UPDATE devices SET last_ip=?, last_seen=?, count=count+1 WHERE mac=?",
+                (ip, ts, mac),
+            )
+            row = con.execute("SELECT * FROM devices WHERE mac=?", (mac,)).fetchone()
+    return dict(row)
+
+def _db_device_list(include_blocked: bool = False) -> list[dict]:
+    sql = "SELECT * FROM devices"
+    if not include_blocked:
+        sql += " WHERE blocked=0"
+    sql += " ORDER BY last_seen DESC"
+    with sqlite3.connect(DB_FILE) as con:
+        con.row_factory = sqlite3.Row
+        return [dict(r) for r in con.execute(sql).fetchall()]
+
+def _db_device_blocked_macs() -> set[str]:
+    with sqlite3.connect(DB_FILE) as con:
+        return {r[0] for r in con.execute("SELECT mac FROM devices WHERE blocked=1").fetchall()}
+
+def _db_device_rename(device_id: int, new_name: str) -> bool:
+    with sqlite3.connect(DB_FILE) as con:
+        cur = con.execute("UPDATE devices SET friendly_name=? WHERE id=?", (new_name, device_id))
+        return cur.rowcount > 0
+
+def _db_device_set_blocked(device_id: int, blocked: bool) -> bool:
+    with sqlite3.connect(DB_FILE) as con:
+        cur = con.execute("UPDATE devices SET blocked=? WHERE id=?", (1 if blocked else 0, device_id))
+        return cur.rowcount > 0
+
+def _db_device_delete(device_id: int) -> bool:
+    with sqlite3.connect(DB_FILE) as con:
+        cur = con.execute("DELETE FROM devices WHERE id=?", (device_id,))
+        return cur.rowcount > 0
+
 _lock          = threading.Lock()
 _access_token  = None
 _refresh_token = os.environ["NETATMO_REFRESH_TOKEN"]
 _token_expiry  = 0.0
 _weather       = None
 _log_buffer    = deque(maxlen=500)
-_devices: dict[str, dict] = {}   # ip -> {name, last_seen, count}
+# Devices live in SQLite (table `devices`). The only in-memory state is a
+# cached set of blocked MACs so the before_request hook can reject quickly
+# without hitting the DB on every request. Refreshed on block/unblock.
+_blocked_macs: set[str] = set()
+_blocked_lock = threading.Lock()
+
+def _refresh_blocked_cache():
+    global _blocked_macs
+    with _blocked_lock:
+        _blocked_macs = _db_device_blocked_macs()
 _metrics: dict = {}
 _metrics_lock  = threading.Lock()
 
@@ -316,20 +394,54 @@ def _ago(ts: float) -> str:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+def _device_mac_for_request() -> str:
+    """Return the MAC to key on for this request, or a synthetic 'unknown-<ip>'
+    fallback for legacy firmware (pre-v1.6) that doesn't send X-Device-Id."""
+    mac = (request.headers.get("X-Device-Id") or "").strip().upper()
+    if not mac:
+        return f"unknown-{request.remote_addr}"
+    return mac
+
+def _initial_friendly_name(mac: str) -> str:
+    """Pick a default friendly name when a new device first appears: the
+    firmware's X-Device-Name if present, else DEVICE_NAMES env mapping,
+    else 'Device-<last4 of MAC>'. Used only on first sight; subsequent
+    renames in the UI override this permanently."""
+    n = request.headers.get("X-Device-Name", "").strip()
+    if n:
+        return n
+    n = _device_names.get(request.remote_addr, "").strip()
+    if n:
+        return n
+    if mac.startswith("unknown-"):
+        return mac
+    suffix = mac.replace(":", "")[-4:]
+    return f"Device-{suffix}"
+
+
+@app.before_request
+def _block_check():
+    if request.path != "/weather":
+        return None
+    mac = _device_mac_for_request()
+    with _blocked_lock:
+        if mac in _blocked_macs:
+            return ("blocked\n", 403, {"Content-Type": "text/plain"})
+    return None
+
+
 @app.after_request
 def _log_request(response):
-    ip = request.remote_addr
-    if request.path == "/weather":
-        name = (request.headers.get("X-Device-Name")
-                or _device_names.get(ip)
-                or ip)
-        with _lock:
-            if ip not in _devices:
-                _devices[ip] = {"name": name, "last_seen": 0.0, "count": 0}
-            else:
-                _devices[ip]["name"] = name  # update in case firmware was reflashed
-            _devices[ip]["last_seen"] = time.time()
-            _devices[ip]["count"]    += 1
+    if request.path == "/weather" and response.status_code == 200:
+        mac = _device_mac_for_request()
+        if mac.startswith("unknown-"):
+            _log(f"warning: /weather without X-Device-Id from {request.remote_addr} "
+                 f"— registering as '{mac}'. Update firmware to v1.6+.")
+        try:
+            _db_device_upsert(mac, _initial_friendly_name(mac),
+                              request.remote_addr, int(time.time()))
+        except Exception as e:
+            _log(f"device upsert failed for {mac}: {e}")
     _SKIP = ("/log", "/devices", "/metrics", "/favicon", "/apple-touch-icon")
     if not any(request.path.startswith(p) for p in _SKIP):
         _log(f"HTTP {request.method} {request.path} → {response.status_code}")
@@ -353,21 +465,60 @@ def health():
 @app.route("/devices")
 def devices():
     now = time.time()
-    with _lock:
-        rows = [
-            {
-                "ip":        ip,
-                "name":      d["name"],
-                "last_seen": int(d["last_seen"]),
-                "ago":       _ago(d["last_seen"]) if d["last_seen"] else "never",
-                "count":     d["count"],
-                "online":    (now - d["last_seen"]) < DEVICE_TIMEOUT,
-            }
-            for ip, d in sorted(_devices.items(), key=lambda x: -x[1]["last_seen"])
-        ]
+    include_blocked = request.args.get("include_blocked", "").lower() in ("1", "true", "yes")
+    rows = [
+        {
+            "id":        d["id"],
+            "mac":       d["mac"],
+            "name":      d["friendly_name"],
+            "ip":        d["last_ip"],
+            "last_seen": d["last_seen"],
+            "ago":       _ago(d["last_seen"]),
+            "count":     d["count"],
+            "online":    (now - d["last_seen"]) < DEVICE_TIMEOUT,
+            "blocked":   bool(d["blocked"]),
+        }
+        for d in _db_device_list(include_blocked=include_blocked)
+    ]
     resp = jsonify(rows)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
+
+
+@app.route("/devices/<int:device_id>/rename", methods=["POST"])
+def device_rename(device_id: int):
+    payload = request.get_json(silent=True) or {}
+    new_name = (payload.get("name") or "").strip()
+    if not new_name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    if len(new_name) > 64:
+        return jsonify({"ok": False, "error": "name too long"}), 400
+    ok = _db_device_rename(device_id, new_name)
+    return jsonify({"ok": ok}), (200 if ok else 404)
+
+
+@app.route("/devices/<int:device_id>/block", methods=["POST"])
+def device_block(device_id: int):
+    ok = _db_device_set_blocked(device_id, True)
+    if ok:
+        _refresh_blocked_cache()
+    return jsonify({"ok": ok}), (200 if ok else 404)
+
+
+@app.route("/devices/<int:device_id>/unblock", methods=["POST"])
+def device_unblock(device_id: int):
+    ok = _db_device_set_blocked(device_id, False)
+    if ok:
+        _refresh_blocked_cache()
+    return jsonify({"ok": ok}), (200 if ok else 404)
+
+
+@app.route("/devices/<int:device_id>", methods=["DELETE"])
+def device_delete(device_id: int):
+    ok = _db_device_delete(device_id)
+    if ok:
+        _refresh_blocked_cache()  # in case it was blocked
+    return jsonify({"ok": ok}), (200 if ok else 404)
 
 
 @app.route("/metrics")
@@ -561,6 +712,12 @@ def index():
     .bar-wrap { background: var(--bg3); border-radius: 4px; height: 8px;
                 width: 180px; display: inline-block; vertical-align: middle; }
     .bar-fill { display: block; height: 8px; border-radius: 4px; background: #238636; }
+    .dev-btn { padding: 2px 8px; font-size: 11px; font-family: inherit;
+               background: var(--bg3); color: var(--text2); border: 1px solid var(--border);
+               border-radius: 3px; cursor: pointer; }
+    .dev-btn:hover { background: var(--border); color: var(--text1); }
+    .dev-btn-del { color: #f85149; padding: 2px 7px; }
+    #dev-table .dev-name:hover { border-color: var(--border) !important; }
     .bar-warn { background: #d29922; }
     .bar-crit { background: #f85149; }
     .warn-box {
@@ -660,9 +817,13 @@ def index():
       <canvas id="chart-temp"></canvas></div>
   </div>
 
-  <h2>Devices</h2>
+  <h2>Devices
+    <label style="margin-left:12px;font-size:11px;font-weight:normal;color:#8b949e;cursor:pointer">
+      <input type="checkbox" id="dev-show-blocked" style="vertical-align:middle"> Show blocked
+    </label>
+  </h2>
   <table id="dev-table"><tbody>
-    <tr><td colspan="4" style="color:#8b949e">Loading…</td></tr>
+    <tr><td colspan="5" style="color:#8b949e">Loading…</td></tr>
   </tbody></table>
 
   <h2>Commit history
@@ -852,23 +1013,72 @@ def index():
         .catch(e => { document.getElementById('ts').textContent = 'Fetch error: ' + e; });
     }
 
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
     function refreshDevices() {
-      fetch('/devices?t=' + Date.now())
+      const showBlocked = document.getElementById('dev-show-blocked').checked;
+      const url = '/devices?t=' + Date.now() + (showBlocked ? '&include_blocked=1' : '');
+      fetch(url)
         .then(r => r.json())
         .then(devs => {
           const tbody = document.querySelector('#dev-table tbody');
           if (devs.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" style="color:#8b949e">No devices seen yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" style="color:#8b949e">No devices seen yet</td></tr>';
             return;
           }
           tbody.innerHTML = devs.map(d => {
             const dot   = '<span class="dot ' + (d.online ? 'online' : 'offline') + '"></span>';
-            const label = d.name !== d.ip ? d.name + ' <span style="color:#8b949e">(' + d.ip + ')</span>' : d.ip;
+            const rowStyle = d.blocked ? ' style="opacity:0.55"' : '';
+            const name = escapeHtml(d.name);
+            const meta = '<span style="color:#8b949e;font-size:11px">' +
+                         escapeHtml(d.ip || '-') + ' · ' + escapeHtml(d.mac) +
+                         (d.blocked ? ' · <span style="color:#f85149">blocked</span>' : '') +
+                         '</span>';
+            const nameCell =
+              '<input class="dev-name" data-id="' + d.id + '" value="' + name + '" ' +
+                'style="background:transparent;border:1px solid transparent;color:inherit;' +
+                'font:inherit;padding:2px 4px;border-radius:3px;width:180px" ' +
+                'onfocus="this.style.borderColor=\'#30363d\'" ' +
+                'onblur="renameDevice(' + d.id + ', this)" ' +
+                'onkeydown="if(event.key===\'Enter\')this.blur();' +
+                'if(event.key===\'Escape\'){this.value=this.defaultValue;this.blur();}">';
+            const blockBtn = d.blocked
+              ? '<button class="dev-btn" onclick="unblockDevice(' + d.id + ')">Unblock</button>'
+              : '<button class="dev-btn" onclick="blockDevice(' + d.id + ')">Block</button>';
+            const removeBtn = '<button class="dev-btn dev-btn-del" title="Remove" onclick="removeDevice(' + d.id + ')">×</button>';
             const count = d.count + ' poll' + (d.count !== 1 ? 's' : '');
-            return '<tr><td>' + dot + label + '</td><td>' + d.ago +
-                   '</td><td>' + count + '</td></tr>';
+            return '<tr' + rowStyle + '><td>' + dot + nameCell + '<br>' + meta +
+                   '</td><td>' + d.ago +
+                   '</td><td>' + count +
+                   '</td><td style="text-align:right">' + blockBtn + ' ' + removeBtn + '</td></tr>';
           }).join('');
         });
+    }
+
+    function renameDevice(id, input) {
+      const newName = input.value.trim();
+      input.style.borderColor = 'transparent';
+      if (!newName || newName === input.defaultValue) {
+        input.value = input.defaultValue;
+        return;
+      }
+      fetch('/devices/' + id + '/rename', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: newName}),
+      }).then(r => r.json()).then(j => {
+        if (j.ok) { input.defaultValue = newName; }
+        else { input.value = input.defaultValue; }
+      }).catch(() => { input.value = input.defaultValue; });
+    }
+
+    function blockDevice(id)   { fetch('/devices/' + id + '/block',   {method:'POST'}).then(refreshDevices); }
+    function unblockDevice(id) { fetch('/devices/' + id + '/unblock', {method:'POST'}).then(refreshDevices); }
+    function removeDevice(id)  {
+      if (!confirm('Remove this device? It will reappear if it polls again.')) return;
+      fetch('/devices/' + id, {method:'DELETE'}).then(refreshDevices);
     }
 
     function bar(pct) {
@@ -947,6 +1157,8 @@ def index():
         });
     }
 
+    document.getElementById('dev-show-blocked').addEventListener('change', refreshDevices);
+
     refreshLog();
     refreshDevices();
     refreshMetrics();
@@ -963,6 +1175,7 @@ def index():
 
 if __name__ == "__main__":
     _db_init()
+    _refresh_blocked_cache()
     _log("Netatmo proxy starting...")
     try:
         _fetch()

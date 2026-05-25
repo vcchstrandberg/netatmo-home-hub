@@ -1,6 +1,6 @@
 # Server Reference
 
-The proxy is a single Python script (`server/netatmo_proxy.py`) running under Flask. It starts three background threads (weather polling, metrics collection, auto-deploy check) and serves six HTTP routes.
+The proxy is a single Python script (`server/netatmo_proxy.py`) running under Flask. It starts three background threads (weather polling, metrics collection, auto-deploy check) and serves a dozen HTTP routes — the `/weather` poll, the web status page, and the device admin endpoints.
 
 ---
 
@@ -8,7 +8,7 @@ The proxy is a single Python script (`server/netatmo_proxy.py`) running under Fl
 
 - **Weather proxy** — polls Netatmo every 5 minutes, caches the result in memory, serves it to any device on the local network over plain HTTP; includes indoor CO2 (ppm) and noise (dB) from the base station
 - **Automatic token refresh** — Netatmo OAuth2 refresh token rotated on every poll cycle and persisted back to `.env`; never needs manual intervention
-- **Device tracking** — every `/weather` caller auto-registered by IP; named via the `X-Device-Name` request header; online/offline status based on configurable timeout
+- **Device tracking** — every `/weather` caller auto-registered by MAC (from `X-Device-Id` header); persisted in SQLite so the list survives restarts; friendly names editable in the web UI; per-device block returns 403 to that MAC; online/offline status based on configurable timeout
 - **Server metrics** — CPU, RAM, disk, uptime and Pi CPU temperature sampled every 15 s by a background thread
 - **Threshold warnings** — a warning banner appears above the Server metrics section when any metric exceeds a threshold; yellow for high, red for critical
 - **Time-series history** — weather and server metrics persisted to SQLite (`metrics.db`); rows older than 30 days pruned automatically; charts on the status page with selectable context windows
@@ -72,31 +72,73 @@ Lightweight health check — useful for monitoring scripts or router uptime chec
 
 ---
 
-### `GET /devices`
+### `GET /devices[?include_blocked=1]`
 
-Returns a JSON array of all devices that have called `/weather` since the server started, sorted by most recently seen.
+Returns a JSON array of all devices ever seen (persisted in SQLite), sorted by most recently seen. Blocked devices are hidden by default; pass `?include_blocked=1` to include them.
 
 ```json
 [
   {
+    "id":        7,
+    "mac":       "B0:A6:04:8B:5E:B8",
+    "name":      "Living room",
     "ip":        "192.168.0.115",
-    "name":      "ESP32-CAM",
     "last_seen": 1747123456,
     "ago":       "3m ago",
     "count":     42,
-    "online":    true
+    "online":    true,
+    "blocked":   false
   }
 ]
 ```
 
 | Field | Description |
 |---|---|
-| `name` | Value from `X-Device-Name` header, or `DEVICE_NAMES` env var, or bare IP |
+| `id` | Stable numeric primary key — used by the admin routes below |
+| `mac` | MAC address from the device's `X-Device-Id` header. Synthetic `unknown-<ip>` for legacy firmware (pre-v1.6) without the header |
+| `name` | Server-owned friendly name. Initially seeded from `X-Device-Name`/`DEVICE_NAMES`/auto-suffix; user-editable via `POST /devices/<id>/rename` |
+| `ip` | Most recent client IP. Updated on every `/weather` call |
 | `ago` | Human-readable time since last `/weather` call |
-| `count` | Total `/weather` calls since server start |
+| `count` | Total `/weather` calls since the device was first seen |
 | `online` | `true` if last seen within `DEVICE_TIMEOUT` seconds (default 600) |
+| `blocked` | If `true`, the server returns 403 on `/weather` from this MAC |
 
-Devices are auto-discovered — no configuration needed. Names update immediately if a device is reflashed with a new `DEVICE_NAME`.
+---
+
+### `POST /devices/<id>/rename`
+
+Set a new friendly name. Persisted across server restarts. Reflashing the device does **not** revert the name — the server's value always wins after first sight.
+
+```
+POST /devices/7/rename
+Content-Type: application/json
+{"name": "Living room"}
+→ {"ok": true}
+```
+
+`400` if `name` missing or longer than 64 chars; `404` if device id unknown.
+
+---
+
+### `POST /devices/<id>/block` · `POST /devices/<id>/unblock`
+
+Toggle the blocked flag. While blocked, `/weather` returns **403** to that MAC and the device is hidden from `GET /devices` (unless `include_blocked=1`). Persistent across restarts.
+
+```
+POST /devices/7/block
+→ {"ok": true}
+```
+
+---
+
+### `DELETE /devices/<id>`
+
+Removes the device row. If the device calls `/weather` again it re-registers from scratch — fresh auto-named, fresh counters. Useful for cleaning up one-off curl tests. To stop a device from coming back, block it instead.
+
+```
+DELETE /devices/7
+→ {"ok": true}
+```
 
 ---
 
