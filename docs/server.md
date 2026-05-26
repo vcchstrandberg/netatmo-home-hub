@@ -235,6 +235,91 @@ Access at: `http://netatmo-hub.local:8080/admin` (or use the Pi's IP directly �
 
 ---
 
+## Storage (SQLite)
+
+The server keeps three persistent things in one local SQLite file: weather history, server metrics history, and the device registry. No external database — SQLite is plenty for this volume, and the entire DB is one file you can `scp` off the Pi for backups or inspect with `sqlite3` directly.
+
+### File
+
+```
+server/metrics.db
+```
+
+Path is relative to `netatmo_proxy.py` (resolved at import time). Sits next to the script, gitignored, never leaves the Pi. SQLite uses WAL/journal sidecar files (`metrics.db-wal`, `metrics.db-shm`) while the service is running — leave them alone.
+
+### Tables
+
+| Table | Rows added | Key columns |
+|---|---|---|
+| `metrics` | 1 per 15 s (server-metrics collector thread) | `ts`, `cpu_percent`, `ram_percent`, `disk_percent`, `cpu_temp` |
+| `weather_history` | 1 per 5 min (weather poll thread) | `ts`, `indoor_temp`, `outdoor_temp`, `indoor_humidity`, `pressure`, `rain_1h`, `co2`, `noise` |
+| `devices` | 1 row per unique MAC | `id`, `mac` (UNIQUE), `friendly_name`, `last_ip`, `first_seen`, `last_seen`, `count`, `blocked` |
+
+Full schema lives in `_db_init()` at the top of `netatmo_proxy.py`.
+
+### Retention
+
+`metrics` and `weather_history` are pruned to **30 days** on every insert (rows with `ts < now - 30 days` are deleted in the same transaction). That keeps the DB bounded — a year of operation stays around ~5 MB. `devices` rows live forever until you delete them via the admin UI; the table doesn't grow with traffic, only with new unique MACs.
+
+The 30-day window is the `RETAIN_DAYS` constant near the top of `netatmo_proxy.py`. Change it if you need more or less history.
+
+### Migrations
+
+Schema lives in code, not in versioned migration files. `_db_init()` uses `CREATE TABLE IF NOT EXISTS` so it's safe to run on a fresh DB or an existing one. New columns are added with `ALTER TABLE … ADD COLUMN` inside a `try/except OperationalError`, which swallows the error if the column already exists. This was the approach used to add `co2` and `noise` to `weather_history` in v1.8 without breaking installs that pre-dated those columns.
+
+For a destructive schema change (renames, drops, type changes), you'd need a real migration step — none of those have happened yet.
+
+### Setup
+
+The first time the server starts, `_db_init()` runs and creates the file. **You don't normally need to do anything** — the database appears on its own.
+
+If you want to initialize it explicitly before the first run (useful when scripting a fresh install, or after a destructive `rm metrics.db`), use the helper script:
+
+```bash
+cd ~/netatmo-home-hub
+server/init_db.sh
+```
+
+This runs `_db_init()` under the venv, prints what was created, and exits. It uses dummy values for the Netatmo env vars (only `_db_init()` is invoked — no API calls happen).
+
+### Inspecting
+
+```bash
+sqlite3 ~/netatmo-home-hub/server/metrics.db
+sqlite> .schema
+sqlite> SELECT COUNT(*) FROM weather_history;
+sqlite> SELECT * FROM devices;
+sqlite> .quit
+```
+
+For CSV exports, the `GET /weather/export?hours=N` route is more convenient than raw SQL.
+
+### Backup
+
+It's a single file. While the service is stopped:
+
+```bash
+cp ~/netatmo-home-hub/server/metrics.db ~/metrics.db.bak
+```
+
+While the service is running, use SQLite's online backup instead so you don't catch a half-written transaction:
+
+```bash
+sqlite3 ~/netatmo-home-hub/server/metrics.db ".backup ~/metrics.db.bak"
+```
+
+### Reset
+
+Stop the service, delete the file, restart — `_db_init()` recreates it empty. All history and the device registry are lost; live weather and the in-memory caches are unaffected.
+
+```bash
+sudo systemctl stop netatmo-proxy
+rm ~/netatmo-home-hub/server/metrics.db*
+sudo systemctl start netatmo-proxy
+```
+
+---
+
 ## Log buffer
 
 All application events go through `_log(msg)`, which prints to stdout (captured by journald) and appends to `_log_buffer` (a `deque(maxlen=500)`). HTTP requests are logged via `@app.after_request`, with the following paths excluded to avoid noise:
