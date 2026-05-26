@@ -11,7 +11,7 @@ The proxy is a single Python script (`server/netatmo_proxy.py`) running under Fl
 - **Device tracking** — every `/weather` caller auto-registered by MAC (from `X-Device-Id` header); persisted in SQLite so the list survives restarts; friendly names editable in the web UI; per-device block returns 403 to that MAC; online/offline status based on configurable timeout
 - **Server metrics** — CPU, RAM, disk, uptime and Pi CPU temperature sampled every 15 s by a background thread
 - **Threshold warnings** — a warning banner appears above the Server metrics section when any metric exceeds a threshold; yellow for high, red for critical
-- **Time-series history** — weather and server metrics persisted to SQLite (`metrics.db`); rows older than 30 days pruned automatically; charts on the status page with selectable context windows
+- **Time-series history** — weather and server metrics persisted to SQLite (`metrics.db`); rows older than 7 days pruned automatically; charts on the status page with selectable context windows
 - **Weather CSV export** — `GET /weather/export?hours=N` downloads all weather fields for the selected window as a CSV file; Export button on the status page tracks the active context window
 - **Live commit history** — reads `git log` at request time and renders a linked table on the status page
 - **Auto-deploy** — `update.sh` cron script polls GitHub every 5 minutes, pulls if there is a new commit, and restarts the service automatically
@@ -259,9 +259,15 @@ Full schema lives in `_db_init()` at the top of `netatmo_proxy.py`.
 
 ### Retention
 
-`metrics` and `weather_history` are pruned to **30 days** on every insert (rows with `ts < now - 30 days` are deleted in the same transaction). That keeps the DB bounded — a year of operation stays around ~5 MB. `devices` rows live forever until you delete them via the admin UI; the table doesn't grow with traffic, only with new unique MACs.
+`metrics` and `weather_history` are pruned to **7 days** on every insert (rows with `ts < now - 7 days` are deleted in the same transaction). That keeps the DB bounded — typical size with full retention is ~1.5 MB:
 
-The 30-day window is the `RETAIN_DAYS` constant near the top of `netatmo_proxy.py`. Change it if you need more or less history.
+- `metrics`: 1 row per 15 s × 7 d ≈ 40k rows × ~32 B ≈ 1.3 MB
+- `weather_history`: 1 row per 5 min × 7 d ≈ 2k rows × ~64 B ≈ 130 KB
+- `devices`: a handful of rows total, ~1 KB
+
+`devices` rows live forever until you delete them via the admin UI; the table doesn't grow with traffic, only with new unique MACs.
+
+The 7-day window is the `RETAIN_DAYS` constant near the top of `netatmo_proxy.py`. If you change it, run `server/init_db.sh` afterwards (with the service stopped) to VACUUM the file and actually reclaim the freed pages — without VACUUM, the deleted rows just become free space inside the existing file, which SQLite reuses but doesn't return to the filesystem.
 
 ### Migrations
 
@@ -371,8 +377,10 @@ sudo systemctl restart netatmo-proxy
 
 ```bash
 chmod +x ~/netatmo-home-hub/server/update.sh
-(crontab -l 2>/dev/null; echo "*/5 * * * * /home/pi/netatmo-home-hub/server/update.sh >> /home/pi/netatmo-home-hub/server/update.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "*/5 * * * * /home/pi/netatmo-home-hub/server/update.sh") | crontab -
 ```
+
+> Older docs showed the crontab line with `>> update.log 2>&1` redirection. As of v1.13 the script manages its own log internally with a 100 KiB size cap — no shell redirect needed. If you have the old line in your crontab, replace it with the one above so `update.log` doesn't grow indefinitely.
 
 The script only logs when it actually updates — silent on no-change runs. Follow the log:
 

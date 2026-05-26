@@ -31,7 +31,7 @@ from flask import Flask, jsonify, abort, Response, request, session, redirect, u
 
 load_dotenv()
 
-SERVER_VERSION = "1.12"
+SERVER_VERSION = "1.13"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -82,7 +82,7 @@ DATA_URL   = "https://api.netatmo.com/api/getstationsdata"
 POLL_SECS  = 300
 ENV_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 DB_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics.db")
-RETAIN_DAYS = 30
+RETAIN_DAYS = 7
 
 def _db_init():
     with sqlite3.connect(DB_FILE) as con:
