@@ -202,7 +202,19 @@ Response includes `Cache-Control: no-cache` to prevent browser caching.
 
 ### `GET /`
 
-Web status page — a dark-themed dashboard with the following sections:
+Public weather page — no login required. Mobile-first responsive layout: city + last-updated time in the header, indoor/outdoor cards with big temperatures, a Rain card showing 1h/24h, and CO₂/Noise mini-cards. Reloads itself every 60 s. A "Raining now" banner appears above the cards when `is_raining` is true. A small **Admin** link in the footer leads to `/login`.
+
+### `GET /login` · `POST /login`
+
+Password login form for admin access. `POST` checks `ADMIN_PASSWORD` from the environment; on success sets a session cookie and redirects to the `next` query parameter (defaults to `/admin`). Failed attempts are logged. No rate limiting — the server is LAN-only by design.
+
+### `GET /logout`
+
+Clears the session and redirects to `/`.
+
+### `GET /admin`
+
+Admin dashboard — requires login. Same dark-themed dashboard that existed at `/` in prior versions, with these sections:
 
 | Section | Update mechanism |
 |---|---|
@@ -211,13 +223,15 @@ Web status page — a dark-themed dashboard with the following sections:
 | Server warnings | JS polls `/metrics` every 15 s; banner shown/hidden based on thresholds |
 | Server metrics | JS polls `/metrics` every 15 s |
 | Metrics history charts | JS polls `/metrics/history` every 30 s; context: 1h / 6h / 24h / 7d |
-| Devices | JS polls `/devices` every 15 s |
+| Devices | JS polls `/devices` every 15 s; rename/block/remove inline |
 | Commit history | Server-rendered on page load (reads `git log` live) |
 | Log | JS polls `/log` every 10 s, auto-scrolls to bottom |
 
 A **Pull & Restart** button sits next to the Commit history heading. Clicking it calls `POST /update`, which runs `git pull --ff-only` and restarts the service. If the repo is already up to date, no restart is triggered. Requires passwordless sudo for `systemctl restart netatmo-proxy` — see [raspberry-pi-setup.md](raspberry-pi-setup.md).
 
-Access at: `http://netatmo-hub.local:8080/` (or use the Pi's IP directly — `netatmo-hub.local` does not resolve on Android).
+All device admin routes (`POST /devices/<id>/rename`, `/block`, `/unblock`, `DELETE /devices/<id>`) and `POST /update` are also gated by the admin session — they return `401 {"ok": false, "error": "unauthorized"}` when called without an admin cookie.
+
+Access at: `http://netatmo-hub.local:8080/admin` (or use the Pi's IP directly — `netatmo-hub.local` does not resolve on Android).
 
 ---
 
@@ -298,6 +312,10 @@ tail -f ~/netatmo-home-hub/server/update.log
 | `PORT` | No | `8080` | HTTP port to listen on |
 | `DEVICE_TIMEOUT` | No | `600` | Seconds before a device is considered offline |
 | `DEVICE_NAMES` | No | — | Fallback IP→name map: `192.168.0.115:ESP32-CAM,...` (prefer `DEVICE_NAME` in firmware) |
+| `ADMIN_PASSWORD` | No¹ | — | Password for the `/admin` dashboard and device admin API. If unset, `POST /login` always fails. |
+| `SESSION_SECRET` | No | random | Signing key for the admin session cookie. If unset, a fresh random key is generated at boot — existing logins do not survive a restart. Set this for stable sessions. |
+
+¹ Required only if you want to use the `/admin` page or the admin API routes. The public `/` weather page works without it.
 
 ---
 

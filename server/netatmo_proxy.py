@@ -27,11 +27,11 @@ from datetime import datetime
 import psutil
 import requests
 from dotenv import load_dotenv, set_key
-from flask import Flask, jsonify, abort, Response, request
+from flask import Flask, jsonify, abort, Response, request, session, redirect, url_for
 
 load_dotenv()
 
-SERVER_VERSION = "1.11"
+SERVER_VERSION = "1.12"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -249,6 +249,37 @@ _metrics_lock  = threading.Lock()
 
 app = Flask(__name__)
 
+# ── Admin auth ───────────────────────────────────────────────────────────────
+# Single shared password (env: ADMIN_PASSWORD) protects /admin and the device-
+# management API. Session secret comes from SESSION_SECRET if set; otherwise
+# a fresh random one is generated at boot — that means existing login sessions
+# don't survive a server restart unless SESSION_SECRET is configured.
+_ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "").strip()
+_SESSION_SECRET = os.environ.get("SESSION_SECRET", "").strip() or os.urandom(32).hex()
+app.secret_key = _SESSION_SECRET
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # No Secure flag — this server is LAN HTTP only by design.
+    PERMANENT_SESSION_LIFETIME=30 * 24 * 3600,  # 30 days
+)
+
+def is_admin() -> bool:
+    return bool(session.get("admin"))
+
+def require_admin():
+    """Use inside a route to enforce admin. Returns a 401 Response if not
+    authenticated; otherwise returns None and the route continues."""
+    if not is_admin():
+        # API callers get JSON 401; browser GETs that asked for HTML get a
+        # redirect to /login. Easier than a decorator for this small set of
+        # routes — call it as the first line of the route handler.
+        if request.method == "GET" and "text/html" in request.headers.get("Accept", ""):
+            return redirect(url_for("login", next=request.path))
+        return (jsonify({"ok": False, "error": "unauthorized"}), 401)
+    return None
+
+
 
 def _log(msg: str):
     entry = f"[{_ts()}] {msg}"
@@ -462,6 +493,65 @@ def health():
         return jsonify({"ok": True, "has_data": _weather is not None})
 
 
+# ── Auth routes ──────────────────────────────────────────────────────────────
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    err = None
+    next_url = request.args.get("next") or request.form.get("next") or "/admin"
+    # Don't allow open redirects.
+    if not next_url.startswith("/"):
+        next_url = "/admin"
+    if request.method == "POST":
+        if not _ADMIN_PASSWORD:
+            err = "Admin password is not configured. Set ADMIN_PASSWORD in .env on the Pi."
+        elif (request.form.get("password") or "") == _ADMIN_PASSWORD:
+            session.permanent = True
+            session["admin"] = True
+            return redirect(next_url)
+        else:
+            err = "Wrong password."
+            _log(f"warning: failed admin login from {request.remote_addr}")
+
+    html = """<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hub admin login</title>
+<style>
+:root { --bg:#0d1117; --bg2:#161b22; --text1:#e6edf3; --text2:#8b949e;
+        --border:#30363d; --accent:#238636; --danger:#f85149; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--text1); font: 14px -apple-system, system-ui, sans-serif;
+       margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+        padding: 28px; width: 100%; max-width: 340px; }
+h1 { font-size: 18px; margin: 0 0 6px; }
+p.sub { color: var(--text2); margin: 0 0 18px; font-size: 13px; }
+input[type=password] { width: 100%; padding: 10px 12px; background: var(--bg); color: var(--text1);
+                       border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+input[type=password]:focus { outline: none; border-color: var(--accent); }
+button { width: 100%; padding: 10px 12px; margin-top: 12px; background: var(--accent);
+         color: white; border: 0; border-radius: 6px; font: inherit; cursor: pointer; }
+.err { color: var(--danger); font-size: 13px; margin-top: 12px; }
+</style></head>
+<body><form class="card" method="post">
+  <h1>Netatmo Hub</h1>
+  <p class="sub">Admin login</p>
+  <input type="password" name="password" autofocus autocomplete="current-password" placeholder="Password">
+  <input type="hidden" name="next" value=\"""" + next_url + """\">
+  <button type="submit">Sign in</button>
+  """ + (f'<div class="err">{err}</div>' if err else "") + """
+</form></body></html>"""
+    status = 401 if err else 200
+    return Response(html, mimetype="text/html", status=status)
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    session.clear()
+    return redirect("/")
+
+
 @app.route("/devices")
 def devices():
     now = time.time()
@@ -487,6 +577,8 @@ def devices():
 
 @app.route("/devices/<int:device_id>/rename", methods=["POST"])
 def device_rename(device_id: int):
+    deny = require_admin()
+    if deny: return deny
     payload = request.get_json(silent=True) or {}
     new_name = (payload.get("name") or "").strip()
     if not new_name:
@@ -499,6 +591,8 @@ def device_rename(device_id: int):
 
 @app.route("/devices/<int:device_id>/block", methods=["POST"])
 def device_block(device_id: int):
+    deny = require_admin()
+    if deny: return deny
     ok = _db_device_set_blocked(device_id, True)
     if ok:
         _refresh_blocked_cache()
@@ -507,6 +601,8 @@ def device_block(device_id: int):
 
 @app.route("/devices/<int:device_id>/unblock", methods=["POST"])
 def device_unblock(device_id: int):
+    deny = require_admin()
+    if deny: return deny
     ok = _db_device_set_blocked(device_id, False)
     if ok:
         _refresh_blocked_cache()
@@ -515,6 +611,8 @@ def device_unblock(device_id: int):
 
 @app.route("/devices/<int:device_id>", methods=["DELETE"])
 def device_delete(device_id: int):
+    deny = require_admin()
+    if deny: return deny
     ok = _db_device_delete(device_id)
     if ok:
         _refresh_blocked_cache()  # in case it was blocked
@@ -587,6 +685,8 @@ def metrics_history():
 
 @app.route("/update", methods=["POST"])
 def update():
+    deny = require_admin()
+    if deny: return deny
     try:
         out = subprocess.check_output(
             ["git", "-C", _REPO_DIR, "pull", "--ff-only"],
@@ -607,6 +707,144 @@ def update():
 
 @app.route("/")
 def index():
+    """Public weather page — no login required, mobile-first.
+    The full dashboard (history, metrics, devices, commits, log) lives at
+    /admin behind a password."""
+    with _lock:
+        w = dict(_weather) if _weather else None
+
+    if w:
+        city = w.get("city") or "—"
+        updated = datetime.fromtimestamp(w["updated_at"]).strftime("%H:%M") \
+                  if w.get("updated_at") else "—"
+        indoor_t   = f"{w['indoor_temp']:.1f}"
+        outdoor_t  = f"{w['outdoor_temp']:.1f}"
+        humidity   = f"{w['indoor_humidity']}"
+        pressure   = f"{w['pressure']:.0f}"
+        rain_1h    = f"{w['rain_1h']:.1f}"
+        rain_24h   = f"{w['rain_24h']:.1f}"
+        co2        = f"{w['co2']}" if w.get('co2') is not None else "—"
+        noise      = f"{w['noise']}" if w.get('noise') is not None else "—"
+        raining    = w.get("is_raining")
+    else:
+        city = updated = "—"
+        indoor_t = outdoor_t = humidity = pressure = rain_1h = rain_24h = co2 = noise = "—"
+        raining = False
+
+    rain_banner = ("<div class='rain-banner'>🌧 Raining now</div>"
+                   if raining else "")
+
+    html = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>""" + city + """ — Weather</title>
+<style>
+:root { --bg:#0d1117; --bg2:#161b22; --bg3:#21262d; --border:#30363d;
+        --text1:#e6edf3; --text2:#8b949e; --text3:#6e7681;
+        --indoor:#FFA726; --outdoor:#4FC3F7; --rain:#0277BD; --raining:#58a6ff; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { background: var(--bg); color: var(--text1);
+       font: 16px -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+       margin: 0; padding: 16px; padding-bottom: env(safe-area-inset-bottom, 16px); }
+.wrap { max-width: 520px; margin: 0 auto; }
+header { display: flex; align-items: baseline; justify-content: space-between;
+         margin-bottom: 16px; }
+header h1 { font-size: 20px; font-weight: 600; margin: 0; }
+header .updated { font-size: 12px; color: var(--text2); }
+.rain-banner { background: var(--raining); color: white; text-align: center;
+               padding: 10px; border-radius: 8px; font-weight: 600; margin-bottom: 12px; }
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+        padding: 16px; }
+.card .label { font-size: 13px; color: var(--text2); margin-bottom: 6px;
+               text-transform: uppercase; letter-spacing: 0.5px; }
+.card .label.indoor  { color: var(--indoor); }
+.card .label.outdoor { color: var(--outdoor); }
+.card .big { font-size: 38px; font-weight: 600; line-height: 1; }
+.card .unit { font-size: 18px; color: var(--text2); margin-left: 2px; }
+.card .sub { font-size: 13px; color: var(--text2); margin-top: 8px; }
+.rain { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+        padding: 16px; }
+.rain .label { font-size: 13px; color: var(--rain); margin-bottom: 10px;
+               text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+.rain-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.rain-cell .num { font-size: 26px; font-weight: 600; line-height: 1; }
+.rain-cell .num .unit { font-size: 14px; color: var(--text2); margin-left: 2px; }
+.rain-cell .when { font-size: 12px; color: var(--text2); margin-top: 4px; }
+.extras { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.extras .card .big { font-size: 22px; }
+footer { text-align: center; margin-top: 20px; }
+footer a { color: var(--text3); font-size: 12px; text-decoration: none; }
+footer a:hover { color: var(--text2); }
+@media (max-width: 360px) {
+  .card .big { font-size: 32px; }
+  .rain-cell .num { font-size: 22px; }
+}
+</style>
+</head><body><div class="wrap">
+
+<header>
+  <h1>""" + city + """</h1>
+  <span class="updated">Updated """ + updated + """</span>
+</header>
+
+""" + rain_banner + """
+
+<div class="cards">
+  <div class="card">
+    <div class="label indoor">Indoor</div>
+    <div><span class="big">""" + indoor_t + """</span><span class="unit">°C</span></div>
+    <div class="sub">Humidity """ + humidity + """%</div>
+  </div>
+  <div class="card">
+    <div class="label outdoor">Outdoor</div>
+    <div><span class="big">""" + outdoor_t + """</span><span class="unit">°C</span></div>
+    <div class="sub">""" + pressure + """ hPa</div>
+  </div>
+</div>
+
+<div class="rain">
+  <div class="label">Rain</div>
+  <div class="rain-grid">
+    <div class="rain-cell">
+      <div class="num">""" + rain_1h + """<span class="unit">mm</span></div>
+      <div class="when">last hour</div>
+    </div>
+    <div class="rain-cell">
+      <div class="num">""" + rain_24h + """<span class="unit">mm</span></div>
+      <div class="when">last 24 h</div>
+    </div>
+  </div>
+</div>
+
+<div class="extras">
+  <div class="card">
+    <div class="label">CO₂</div>
+    <div><span class="big">""" + co2 + """</span><span class="unit">ppm</span></div>
+  </div>
+  <div class="card">
+    <div class="label">Noise</div>
+    <div><span class="big">""" + noise + """</span><span class="unit">dB</span></div>
+  </div>
+</div>
+
+<footer><a href="/admin">Admin</a></footer>
+
+</div>
+<script>
+  // Auto-refresh every 60 s by reloading; cheap and reliable.
+  setTimeout(function(){ location.reload(); }, 60000);
+</script>
+</body></html>"""
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/admin")
+def admin_page():
+    deny = require_admin()
+    if deny: return deny
     with _lock:
         w = dict(_weather) if _weather else None
 
@@ -752,7 +990,10 @@ def index():
 </head>
 <body>
   <button id="theme-btn" onclick="toggleTheme()">Light mode</button>
-  <h1>Netatmo Hub <span style="color:#8b949e;font-size:14px;font-weight:normal">v""" + SERVER_VERSION + """</span></h1>
+  <h1>Netatmo Hub <span style="color:#8b949e;font-size:14px;font-weight:normal">admin · v""" + SERVER_VERSION + """</span>
+    <a href="/" style="margin-left:14px;font-size:12px;font-weight:normal;color:#8b949e;text-decoration:none">Public page</a>
+    <a href="/logout" style="margin-left:10px;font-size:12px;font-weight:normal;color:#8b949e;text-decoration:none">Logout</a>
+  </h1>
   <div class="subtitle" id="ts">Loading…</div>
 
   <h2>Current weather</h2>
