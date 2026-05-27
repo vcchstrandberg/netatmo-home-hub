@@ -35,36 +35,81 @@ SERVER_VERSION = "1.13"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-def _get_remote_url() -> str:
+def _origin_owner_repo() -> str:
+    """`owner/repo` for this server's git origin, or a sensible default."""
     try:
         raw = subprocess.check_output(
             ["git", "-C", _REPO_DIR, "remote", "get-url", "origin"],
             stderr=subprocess.DEVNULL
         ).decode().strip()
-        if raw.startswith("git@"):
-            raw = "https://" + raw[4:].replace(":", "/")
+        for prefix in ("git@github.com:", "https://github.com/", "http://github.com/"):
+            if raw.startswith(prefix):
+                raw = raw[len(prefix):]
+                break
         return raw.removesuffix(".git")
     except Exception:
-        return ""
+        return "vcchstrandberg/netatmo-home-hub"
 
-_REMOTE_URL = _get_remote_url()
+_SERVER_REPO   = _origin_owner_repo()
+_FIRMWARE_REPO = "vcchstrandberg/home-hub-firmware"
 
+# Cache GitHub commit lookups so page loads don't burn the 60 req/hr anonymous
+# quota and don't block on a slow API call every reload.
+_COMMITS_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_COMMITS_TTL = 300  # seconds
 
-def _git_log(n: int = 25) -> list[dict]:
+def _github_commits(repo: str, n: int = 25) -> list[dict]:
+    """Fetch the latest `n` commits from a public GitHub repo. On error,
+    return the last cached value if we have one — stale is better than blank."""
+    now = time.time()
+    cached = _COMMITS_CACHE.get(repo)
+    if cached and now - cached[0] < _COMMITS_TTL:
+        return cached[1]
     try:
-        out = subprocess.check_output(
-            ["git", "-C", _REPO_DIR, "log",
-             "--pretty=format:%h\x1f%ad\x1f%s", "--date=short", f"-{n}"],
-            stderr=subprocess.DEVNULL
-        ).decode().strip()
-        rows = []
-        for line in out.splitlines():
-            parts = line.split("\x1f", 2)
-            if len(parts) == 3:
-                rows.append({"hash": parts[0], "date": parts[1], "msg": parts[2]})
-        return rows
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/commits",
+            params={"per_page": n},
+            headers={
+                "Accept":     "application/vnd.github+json",
+                "User-Agent": f"netatmo-home-hub/{SERVER_VERSION}",
+            },
+            timeout=5,
+        )
+        r.raise_for_status()
+        commits = [
+            {
+                "hash": c["sha"][:7],
+                "date": (c["commit"]["author"]["date"] or "")[:10],
+                "msg":  (c["commit"]["message"] or "").splitlines()[0],
+            }
+            for c in r.json()
+        ]
+        _COMMITS_CACHE[repo] = (now, commits)
+        return commits
     except Exception:
-        return []
+        return cached[1] if cached else []
+
+def _commits_table_html(commits: list[dict], repo: str) -> str:
+    if not commits:
+        return "<p style='color:#8b949e'>Git history unavailable.</p>"
+    rows = "\n".join(
+        f"<tr>"
+        f"<td><a href='https://github.com/{repo}/commit/{c['hash']}' target='_blank' "
+        f"style='color:#58a6ff;text-decoration:none'>{c['hash']}</a></td>"
+        f"<td style='color:#8b949e'>{c['date']}</td>"
+        f"<td>{c['msg']}</td>"
+        f"</tr>"
+        for c in commits
+    )
+    return (
+        "<table style='width:700px'>"
+        "<thead><tr>"
+        "<th style='text-align:left;color:#8b949e;padding:4px 12px;width:70px'>Commit</th>"
+        "<th style='text-align:left;color:#8b949e;padding:4px 12px;width:100px'>Date</th>"
+        "<th style='text-align:left;color:#8b949e;padding:4px 12px'>Message</th>"
+        "</tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
 
 CLIENT_ID      = os.environ["NETATMO_CLIENT_ID"]
 CLIENT_SECRET  = os.environ["NETATMO_CLIENT_SECRET"]
@@ -872,28 +917,8 @@ def admin_page():
     else:
         weather_rows = "<tr><td colspan='2'>No data yet</td></tr>"
 
-    commits = _git_log()
-    if commits:
-        commit_rows = "\n".join(
-            f"<tr>"
-            f"<td><a href='{_REMOTE_URL}/commit/{c['hash']}' target='_blank' "
-            f"style='color:#58a6ff;text-decoration:none'>{c['hash']}</a></td>"
-            f"<td style='color:#8b949e'>{c['date']}</td>"
-            f"<td>{c['msg']}</td>"
-            f"</tr>"
-            for c in commits
-        )
-        _history_html = (
-            f"<table style='width:700px'>"
-            f"<thead><tr>"
-            f"<th style='text-align:left;color:#8b949e;padding:4px 12px;width:70px'>Commit</th>"
-            f"<th style='text-align:left;color:#8b949e;padding:4px 12px;width:100px'>Date</th>"
-            f"<th style='text-align:left;color:#8b949e;padding:4px 12px'>Message</th>"
-            f"</tr></thead>"
-            f"<tbody>{commit_rows}</tbody></table>"
-        )
-    else:
-        _history_html = "<p style='color:#8b949e'>Git history unavailable.</p>"
+    _server_history_html   = _commits_table_html(_github_commits(_SERVER_REPO),   _SERVER_REPO)
+    _firmware_history_html = _commits_table_html(_github_commits(_FIRMWARE_REPO), _FIRMWARE_REPO)
 
     html = """<!doctype html>
 <html lang="en">
@@ -1067,7 +1092,7 @@ def admin_page():
     <tr><td colspan="5" style="color:#8b949e">Loading…</td></tr>
   </tbody></table>
 
-  <h2>Commit history
+  <h2>Server commits
     <button id="update-btn" onclick="runUpdate()"
       style="margin-left:12px;padding:3px 10px;font-size:11px;font-family:inherit;
              background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer">
@@ -1075,7 +1100,10 @@ def admin_page():
     </button>
     <span id="update-msg" style="margin-left:10px;font-size:11px;color:#8b949e"></span>
   </h2>
-  """ + _history_html + """
+  """ + _server_history_html + """
+
+  <h2>Firmware commits</h2>
+  """ + _firmware_history_html + """
 
   <h2>Log</h2>
   <div id="log">Loading…</div>
