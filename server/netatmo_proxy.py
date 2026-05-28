@@ -22,16 +22,27 @@ import subprocess
 import time
 import threading
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import psutil
 import requests
 from dotenv import load_dotenv, set_key
 from flask import Flask, jsonify, abort, Response, request, session, redirect, url_for
 
+# astral powers sunrise/sunset for time-of-day backlight dimming. Guarded so the
+# server still boots if the dependency hasn't been installed yet (the Pull &
+# Restart flow pulls code before `pip install` runs) — dimming just falls back
+# to the day level until astral is present.
+try:
+    from astral import LocationInfo
+    from astral.sun import sun as _astral_sun
+    _HAVE_ASTRAL = True
+except Exception:
+    _HAVE_ASTRAL = False
+
 load_dotenv()
 
-SERVER_VERSION = "1.13"
+SERVER_VERSION = "1.14"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -114,6 +125,22 @@ def _commits_table_html(commits: list[dict], repo: str) -> str:
 CLIENT_ID      = os.environ["NETATMO_CLIENT_ID"]
 CLIENT_SECRET  = os.environ["NETATMO_CLIENT_SECRET"]
 DEVICE_TIMEOUT = int(os.environ.get("DEVICE_TIMEOUT", 600))
+
+# Time-of-day display dimming. The hub computes a 0–100 backlight level from the
+# station's location (sunrise/sunset) and hands it to devices in /weather; the
+# firmware just applies it. Levels and the fade window are tunable here.
+def _env_pct(key: str, default: int) -> int:
+    try:
+        return max(0, min(100, int(os.environ.get(key, default))))
+    except (TypeError, ValueError):
+        return default
+
+BACKLIGHT_DAY      = _env_pct("BACKLIGHT_DAY", 90)
+BACKLIGHT_NIGHT    = _env_pct("BACKLIGHT_NIGHT", 10)
+try:
+    BACKLIGHT_RAMP_MIN = max(0, int(os.environ.get("BACKLIGHT_RAMP_MIN", 40)))
+except (TypeError, ValueError):
+    BACKLIGHT_RAMP_MIN = 40
 
 # Optional human-readable names: "192.168.0.115:ESP32-CAM,..."
 _device_names: dict[str, str] = {}
@@ -278,6 +305,8 @@ _access_token  = None
 _refresh_token = os.environ["NETATMO_REFRESH_TOKEN"]
 _token_expiry  = 0.0
 _weather       = None
+_geo           = {"lat": None, "lon": None}  # station coords from Netatmo place
+_sun_cache: dict = {}                         # (date, lat, lon) -> (sunrise, sunset)
 _log_buffer    = deque(maxlen=500)
 # Devices live in SQLite (table `devices`). The only in-memory state is a
 # cached set of blocked MACs so the before_request hook can reject quickly
@@ -361,7 +390,13 @@ def _fetch():
     raw = r.json()
 
     device  = raw["body"]["devices"][0]
-    city    = device.get("place", {}).get("city", "")
+    place   = device.get("place", {})
+    city    = place.get("city", "")
+    # Netatmo place.location is [longitude, latitude].
+    loc     = place.get("location") or []
+    if len(loc) == 2:
+        with _lock:
+            _geo["lon"], _geo["lat"] = float(loc[0]), float(loc[1])
     indoor  = device.get("dashboard_data", {})
     outdoor, rain = {}, {}
     for mod in device.get("modules", []):
@@ -524,12 +559,63 @@ def _log_request(response):
     return response
 
 
+def _sun_times(lat, lon, day):
+    """Today's (sunrise, sunset) as tz-aware UTC datetimes, or None near the
+    poles where the sun doesn't cross the horizon. Cached per day."""
+    key = (day.isoformat(), round(lat, 3), round(lon, 3))
+    cached = _sun_cache.get(key, False)  # False = absent; None = polar day/night
+    if cached is not False:
+        return cached
+    try:
+        observer = LocationInfo(latitude=lat, longitude=lon).observer
+        s = _astral_sun(observer, date=day, tzinfo=timezone.utc)
+        result = (s["sunrise"], s["sunset"])
+    except Exception:
+        result = None
+    _sun_cache.clear()  # only ever need the current day's entry
+    _sun_cache[key] = result
+    return result
+
+
+def _current_backlight() -> int:
+    """0–100 backlight level for 'now', ramped around the station's sun times."""
+    if not _HAVE_ASTRAL:
+        return BACKLIGHT_DAY
+    with _lock:
+        lat, lon = _geo["lat"], _geo["lon"]
+    if lat is None or lon is None:
+        return BACKLIGHT_DAY
+
+    now   = datetime.now(timezone.utc)
+    times = _sun_times(lat, lon, now.date())
+    if times is None:
+        return BACKLIGHT_DAY  # polar day/night — keep it readable
+    sunrise, sunset = times
+
+    half       = timedelta(minutes=BACKLIGHT_RAMP_MIN / 2)
+    day, night = BACKLIGHT_DAY, BACKLIGHT_NIGHT
+
+    if now < sunrise - half:
+        return night
+    if now < sunrise + half:                       # dawn: night -> day
+        f = (now - (sunrise - half)) / (2 * half) if half else 1.0
+        return round(night + (day - night) * f)
+    if now < sunset - half:
+        return day
+    if now < sunset + half:                         # dusk: day -> night
+        f = (now - (sunset - half)) / (2 * half) if half else 1.0
+        return round(day + (night - day) * f)
+    return night
+
+
 @app.route("/weather")
 def weather():
     with _lock:
         if _weather is None:
             abort(503)
-        return jsonify(_weather)
+        payload = dict(_weather)
+    payload["backlight"] = _current_backlight()
+    return jsonify(payload)
 
 
 @app.route("/health")
