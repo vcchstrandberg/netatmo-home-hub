@@ -42,7 +42,7 @@ except Exception:
 
 load_dotenv()
 
-SERVER_VERSION = "1.14"
+SERVER_VERSION = "1.15"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -198,6 +198,10 @@ def _db_init():
                 blocked       INTEGER NOT NULL DEFAULT 0
             )
         """)
+        try:
+            con.execute("ALTER TABLE devices ADD COLUMN user_agent TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         con.execute("CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen)")
 
 def _db_insert(ts: int, cpu: float, ram: float, disk: float, temp):
@@ -250,24 +254,26 @@ def _db_query(since_ts: int) -> list[dict]:
 # X-Device-Name or an auto-generated suffix, but subsequent renames in the
 # web UI take precedence and persist across reflashes and server restarts.
 
-def _db_device_upsert(mac: str, initial_name: str, ip: str, ts: int) -> dict:
+def _db_device_upsert(mac: str, initial_name: str, ip: str, ts: int,
+                      user_agent: str = "") -> dict:
     """Register a touch from device `mac`. Inserts a new row on first sight
     (using `initial_name` as the friendly name), updates last_ip/last_seen/
-    count otherwise. Returns the current row."""
+    count otherwise. `user_agent` is refreshed on every check-in. Returns the
+    current row."""
     with sqlite3.connect(DB_FILE) as con:
         con.row_factory = sqlite3.Row
         row = con.execute("SELECT * FROM devices WHERE mac=?", (mac,)).fetchone()
         if row is None:
             con.execute(
-                "INSERT INTO devices (mac, friendly_name, last_ip, first_seen, last_seen, count) "
-                "VALUES (?, ?, ?, ?, ?, 1)",
-                (mac, initial_name, ip, ts, ts),
+                "INSERT INTO devices (mac, friendly_name, last_ip, first_seen, last_seen, count, user_agent) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?)",
+                (mac, initial_name, ip, ts, ts, user_agent),
             )
             row = con.execute("SELECT * FROM devices WHERE mac=?", (mac,)).fetchone()
         else:
             con.execute(
-                "UPDATE devices SET last_ip=?, last_seen=?, count=count+1 WHERE mac=?",
-                (ip, ts, mac),
+                "UPDATE devices SET last_ip=?, last_seen=?, count=count+1, user_agent=? WHERE mac=?",
+                (ip, ts, user_agent, mac),
             )
             row = con.execute("SELECT * FROM devices WHERE mac=?", (mac,)).fetchone()
     return dict(row)
@@ -550,7 +556,8 @@ def _log_request(response):
                  f"— registering as '{mac}'. Update firmware to v1.6+.")
         try:
             _db_device_upsert(mac, _initial_friendly_name(mac),
-                              request.remote_addr, int(time.time()))
+                              request.remote_addr, int(time.time()),
+                              request.headers.get("User-Agent", "").strip())
         except Exception as e:
             _log(f"device upsert failed for {mac}: {e}")
     _SKIP = ("/log", "/devices", "/metrics", "/favicon", "/apple-touch-icon")
@@ -698,6 +705,12 @@ def devices():
             "count":     d["count"],
             "online":    (now - d["last_seen"]) < DEVICE_TIMEOUT,
             "blocked":   bool(d["blocked"]),
+            # Real firmware sends X-Device-Id (keyed by MAC); web clients don't
+            # and get a synthetic 'unknown-<ip>' key. user_agent is shown as a
+            # supplementary hint only — it's unreliable as a classifier (the
+            # Uno R4 firmware sends none).
+            "is_device": not d["mac"].startswith("unknown-"),
+            "user_agent": d["user_agent"] or "",
         }
         for d in _db_device_list(include_blocked=include_blocked)
     ]
@@ -1413,12 +1426,29 @@ def admin_page():
               if (ev.key === 'Escape') { this.value = this.defaultValue; this.blur(); }
             });
             tdMain.appendChild(input);
+
+            const badge = document.createElement('span');
+            badge.textContent = d.is_device ? 'device' : 'web';
+            badge.style.marginLeft = '6px';
+            badge.style.fontSize = '10px';
+            badge.style.padding = '1px 6px';
+            badge.style.borderRadius = '9px';
+            badge.style.border = '1px solid ' + (d.is_device ? '#238636' : '#30363d');
+            badge.style.color = d.is_device ? '#3fb950' : '#8b949e';
+            tdMain.appendChild(badge);
+
             tdMain.appendChild(document.createElement('br'));
 
             const meta = document.createElement('span');
             meta.style.color = '#8b949e';
             meta.style.fontSize = '11px';
             meta.textContent = (d.ip || '-') + ' · ' + d.mac;
+            if (d.user_agent) {
+              const ua = document.createElement('span');
+              ua.textContent = ' · ' + d.user_agent;
+              ua.title = d.user_agent;
+              meta.appendChild(ua);
+            }
             if (d.blocked) {
               const tag = document.createElement('span');
               tag.style.color = '#f85149';
