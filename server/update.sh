@@ -44,6 +44,20 @@ fi
 
 log "New commit detected: $LOCAL -> $REMOTE"
 git pull --ff-only
+
+# Install Python deps when requirements.txt changed in this pull — otherwise a
+# newly added dependency would be missing until someone installs it by hand.
+# On failure we still restart (guarded imports keep the server booting) and log
+# loudly, rather than leaving new code on disk but never run.
+if ! git diff --quiet "$LOCAL" HEAD -- server/requirements.txt; then
+    log "requirements.txt changed — installing deps into venv..."
+    if "$REPO_DIR/server/venv/bin/pip" install -q -r "$REPO_DIR/server/requirements.txt"; then
+        log "Deps installed."
+    else
+        log "WARNING: pip install failed — restarting anyway; install deps manually" >&2
+    fi
+fi
+
 log "Pull done. Restarting $SERVICE..."
 sudo systemctl restart "$SERVICE"
 log "Done."
