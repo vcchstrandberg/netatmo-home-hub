@@ -8,42 +8,27 @@ A Raspberry Pi acts as a local OAuth hub: it handles all Netatmo token managemen
 
 ---
 
-## Supported boards
+## Devices
 
-| Environment | Board | MCU | Display | Fetch interval |
-|---|---|---|---|---|
-| `esp32cam` | AI-Thinker ESP32-CAM | Xtensa LX6, 240 MHz | SSD1306 128×64 OLED (GPIO14/15) | 5 min |
-| `esp32dev` | Generic ESP32 DevKit | Xtensa LX6, 240 MHz | SSD1306 128×64 OLED (GPIO21/22) | 5 min |
-| `uno_r4_wifi` | Arduino Uno R4 WiFi | Renesas RA4M1, 48 MHz | SSD1306 128×64 OLED (A4/A5) | 60 s |
-| `esp32c6_waveshare_lcd` | Waveshare ESP32-C6 Touch LCD 1.47 | ESP32-C6 RISC-V, 160 MHz | Integrated 320×172 IPS TFT | 5 min |
-
-All OLED boards use U8g2. The Waveshare uses LovyanGFX for its integrated TFT.
+Any number of display clients read from the hub over plain HTTP — no registration, no tokens. The supported boards, their wiring, displays and build/flash instructions live in the firmware repo: [home-hub-firmware](https://github.com/vcchstrandberg/home-hub-firmware). This repo is the server side only.
 
 ---
 
-## Features
+## Features (server)
 
-### Firmware
 - **Central OAuth hub** — the Pi holds the single Netatmo refresh token and rotates it automatically; devices carry no credentials
 - **Unlimited devices** — any device on the local network can call `GET http://<pi>:8080/weather` with no registration or tokens
 - **No TLS on devices** — plain HTTP to the Pi; the Pi uses HTTPS to talk to Netatmo
-- **Full-screen C6 dashboard** — Waveshare ESP32-C6 shows all data simultaneously: thermometer graphics (colour-coded by temperature), rain intensity dots, indoor/outdoor panels, rain bar
-- **3-card cycling display** — OLED boards rotate indoor, outdoor, and rain cards every 5 s
-- **Multi-locale with unit conversion** — Svenska, English US, English UK, Français; °C↔°F, hPa↔inHg, mm↔in
-- **Runtime locale switching** — BOOT button on all ESP32 boards; D7 button on Uno R4; no reflash needed
-- **Device naming** — set `DEVICE_NAME` in `arduino_secrets.h`; sent as `X-Device-Name` HTTP header so the hub can label each device without server config
-- **Error hold** — display stays on the error screen until the hub reconnects; stale data is never re-shown after a lost connection
-
-### Server (Raspberry Pi)
-- **Web status page** — `http://netatmo-hub.local:8080/` with weather, device status, server metrics, history charts, live commit history and scrolling log; light/dark mode toggle
 - **Indoor air quality** — CO2 (ppm) and noise (dB) fetched from the Netatmo base station alongside temperature, humidity and pressure
-- **Device tracking** — every `/weather` caller auto-registered by IP; named via `X-Device-Name` header; online/offline indicator with last-seen time and poll count
+- **Time-of-day backlight** — computes a brightness level from the station's sunrise/sunset and serves it in `/weather` for devices with a controllable display
+- **Web status page** — `http://netatmo-hub.local:8080/` with weather, device status, server metrics, history charts, live commit history and scrolling log; light/dark mode toggle
+- **Device tracking** — every `/weather` caller auto-registered by MAC (from the `X-Device-Id` header); named via `X-Device-Name`; online/offline indicator with last-seen time and poll count
 - **Server metrics** — CPU usage, RAM, disk, uptime and Pi CPU temperature; colour-coded progress bars and threshold warning banner (yellow/red) updated every 15 s
 - **Time-series history** — weather and server metrics persisted to SQLite; side-by-side Chart.js charts with 1h/6h/24h/7d/30d context buttons
 - **Weather CSV export** — download any time window as a CSV file directly from the status page
+- **Live commit history** — GitHub commit tables for both the server and firmware repos on the status page, hashes linked to GitHub
 - **Pull & Restart button** — one-click deploy from the status page; runs `git pull` and restarts the service
-- **Live commit history** — git log table on the status page, commit hashes linked to GitHub
-- **Auto-deploy** — Pi polls GitHub every 5 minutes via cron; pulls and restarts automatically on new commits
+- **Auto-deploy** — Pi polls GitHub every 5 minutes via cron; pulls, installs any new dependencies, and restarts automatically on new commits
 - **Systemd service** — auto-starts on Pi boot, restarts on failure, logs to journald
 
 ---

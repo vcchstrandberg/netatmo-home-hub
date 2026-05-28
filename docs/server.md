@@ -13,8 +13,9 @@ The proxy is a single Python script (`server/netatmo_proxy.py`) running under Fl
 - **Threshold warnings** — a warning banner appears above the Server metrics section when any metric exceeds a threshold; yellow for high, red for critical
 - **Time-series history** — weather and server metrics persisted to SQLite (`metrics.db`); rows older than 7 days pruned automatically; charts on the status page with selectable context windows
 - **Weather CSV export** — `GET /weather/export?hours=N` downloads all weather fields for the selected window as a CSV file; Export button on the status page tracks the active context window
-- **Live commit history** — reads `git log` at request time and renders a linked table on the status page
-- **Auto-deploy** — `update.sh` cron script polls GitHub every 5 minutes, pulls if there is a new commit, and restarts the service automatically
+- **Time-of-day backlight** — computes a 0–100 brightness level from the station's sunrise/sunset (via `astral`) and includes it in `/weather`; see [Backlight dimming](#backlight-dimming)
+- **Live commit history** — fetches recent commits for both the server and firmware repos from the GitHub REST API (cached) and renders linked tables on the status page; see [Commit history](#commit-history)
+- **Auto-deploy** — `update.sh` cron script polls GitHub every 5 minutes, pulls if there is a new commit, installs any new dependencies, and restarts the service automatically
 - **Web status page** — dashboard showing weather, device status, server metrics, commit history and scrolling live log; all sections JS-polled without page reload
 - **Light/dark mode** — toggle button top-right; preference persisted in `localStorage`
 - **Pull & Restart button** — one-click deploy from the status page; runs `git pull --ff-only` and restarts the service; shows inline feedback and auto-reloads the page if new commits were pulled
@@ -40,7 +41,8 @@ Returns the cached weather data as a flat JSON object. This is the only route di
   "rain_1h":         0.0,
   "rain_24h":        2.5,
   "is_raining":      false,
-  "updated_at":      1747123456
+  "updated_at":      1747123456,
+  "backlight":       90
 }
 ```
 
@@ -57,6 +59,9 @@ Returns the cached weather data as a flat JSON object. This is the only route di
 | `rain_24h` | float mm (1 dp) | NAModule3 `dashboard_data.sum_rain_24` |
 | `is_raining` | bool | NAModule3 `dashboard_data.Rain > 0` |
 | `updated_at` | int | Unix timestamp of last successful poll |
+| `backlight` | int 0–100 | Time-of-day display level, computed per request (see [Backlight dimming](#backlight-dimming)) |
+
+`backlight` is computed fresh on each request (not cached with the weather), so every poll reflects the current time of day. Devices with a controllable backlight apply it; others ignore it.
 
 Returns **503** if no data has been fetched yet.
 
@@ -224,10 +229,10 @@ Admin dashboard — requires login. Same dark-themed dashboard that existed at `
 | Server metrics | JS polls `/metrics` every 15 s |
 | Metrics history charts | JS polls `/metrics/history` every 30 s; context: 1h / 6h / 24h / 7d |
 | Devices | JS polls `/devices` every 15 s; rename/block/remove inline |
-| Commit history | Server-rendered on page load (reads `git log` live) |
+| Commit history | Server-rendered on page load (GitHub API, two tables: server + firmware) |
 | Log | JS polls `/log` every 10 s, auto-scrolls to bottom |
 
-A **Pull & Restart** button sits next to the Commit history heading. Clicking it calls `POST /update`, which runs `git pull --ff-only` and restarts the service. If the repo is already up to date, no restart is triggered. Requires passwordless sudo for `systemctl restart netatmo-proxy` — see [raspberry-pi-setup.md](raspberry-pi-setup.md).
+The status page shows two commit tables — **Server commits** and **Firmware commits**. A **Pull & Restart** button sits next to the Server commits heading (it pulls this repo only). Clicking it calls `POST /update`, which runs `git pull --ff-only` and restarts the service. If the repo is already up to date, no restart is triggered. Requires passwordless sudo for `systemctl restart netatmo-proxy` — see [raspberry-pi-setup.md](raspberry-pi-setup.md).
 
 All device admin routes (`POST /devices/<id>/rename`, `/block`, `/unblock`, `DELETE /devices/<id>`) and `POST /update` are also gated by the admin session — they return `401 {"ok": false, "error": "unauthorized"}` when called without an admin cookie.
 
@@ -369,9 +374,22 @@ sudo systemctl restart netatmo-proxy
 
 ---
 
+## Commit history
+
+The status page shows recent commits for **both** repos — the server (this repo) and the firmware. Because the firmware isn't checked out on the Pi, commits are fetched from the **GitHub REST API** rather than a local `git log`:
+
+- `_github_commits(repo)` calls `https://api.github.com/repos/<owner>/<repo>/commits?per_page=25` with a 5-second timeout.
+- Results are cached in memory for 5 minutes per repo (`_COMMITS_CACHE` / `_COMMITS_TTL`), so page reloads don't burn the anonymous 60 req/hr GitHub quota. On an API error or timeout the last cached value is returned — stale beats blank.
+- The server repo is identified from this checkout's `git remote get-url origin` (so a fork links to its own commits); the firmware repo is a constant (`vcchstrandberg/home-hub-firmware`).
+- Both tables are rendered server-side on page load by `_commits_table_html()`, with each hash linked to `https://github.com/<owner>/<repo>/commit/<hash>`.
+
+No authentication is needed for public repos. Earlier versions read the server's local `git log`; that only ever showed server commits and never the firmware's.
+
+---
+
 ## Auto-deploy
 
-`server/update.sh` is designed to run from cron. It compares the local git HEAD to the remote HEAD via `git ls-remote` (no objects downloaded) and if they differ, runs `git pull --ff-only` and `sudo systemctl restart netatmo-proxy`.
+`server/update.sh` is designed to run from cron. It compares the local git HEAD to the remote HEAD via `git ls-remote` (no objects downloaded) and if they differ, runs `git pull --ff-only` and `sudo systemctl restart netatmo-proxy`. When `requirements.txt` changed in the pull, it also runs `pip install -r requirements.txt` into the service venv before restarting, so new dependencies deploy automatically.
 
 **Install the cron job** (run once on the Pi):
 
@@ -388,10 +406,21 @@ The script only logs when it actually updates — silent on no-change runs. Foll
 tail -f ~/netatmo-home-hub/server/update.log
 ```
 
-> **Note:** If a new deployment adds a Python dependency to `requirements.txt`, you must install it manually once before the auto-deploy can restart successfully:
+> **Dependencies:** `update.sh` installs new `requirements.txt` entries automatically (see above). The `astral` import in `netatmo_proxy.py` is also guarded, so the server still boots even if a dependency hasn't installed yet — affected features (backlight dimming) just degrade until it's present. To install by hand if needed:
 > ```bash
 > ~/netatmo-home-hub/server/venv/bin/pip install -r ~/netatmo-home-hub/server/requirements.txt
 > ```
+
+---
+
+## Backlight dimming
+
+The hub computes a display brightness level (0–100) from the station's location and serves it as the `backlight` field of `/weather`. Devices with a controllable backlight (e.g. the ESP32-C6 Touch LCD) apply it; the rest ignore it. All policy lives here — the device just applies the number.
+
+- Sunrise/sunset for the current day are computed from the coordinates in the Netatmo `place` block using the `astral` package (cached per day). No extra API call or configuration.
+- Brightness is `BACKLIGHT_DAY` in daylight and ramps to `BACKLIGHT_NIGHT` across a fade window of `BACKLIGHT_RAMP_MIN` minutes centered on each sun event.
+- The level is computed per request (`_current_backlight()`), so each poll reflects the current time of day.
+- If `astral` is missing, coordinates are unknown, or the location is in polar day/night, it falls back to `BACKLIGHT_DAY`.
 
 ---
 
@@ -407,6 +436,9 @@ tail -f ~/netatmo-home-hub/server/update.log
 | `DEVICE_NAMES` | No | — | Fallback IP→name map: `192.168.0.115:ESP32-CAM,...` (prefer `DEVICE_NAME` in firmware) |
 | `ADMIN_PASSWORD` | No¹ | — | Password for the `/admin` dashboard and device admin API. If unset, `POST /login` always fails. |
 | `SESSION_SECRET` | No | random | Signing key for the admin session cookie. If unset, a fresh random key is generated at boot — existing logins do not survive a restart. Set this for stable sessions. |
+| `BACKLIGHT_DAY` | No | `90` | Daytime backlight level (0–100) sent in `/weather` |
+| `BACKLIGHT_NIGHT` | No | `10` | Nighttime backlight level (0–100) |
+| `BACKLIGHT_RAMP_MIN` | No | `40` | Fade window in minutes, centered on sunrise/sunset |
 
 ¹ Required only if you want to use the `/admin` page or the admin API routes. The public `/` weather page works without it.
 
