@@ -42,7 +42,7 @@ except Exception:
 
 load_dotenv()
 
-SERVER_VERSION = "1.17"
+SERVER_VERSION = "1.18"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -715,6 +715,10 @@ def weather():
         if _weather is None:
             abort(503)
         payload = dict(_weather)
+        # Nested so the existing flat current-conditions fields are untouched;
+        # devices that don't know about it simply ignore the extra key. Null
+        # until the first forecast fetch succeeds.
+        payload["forecast"] = dict(_forecast) if _forecast else None
     payload["backlight"] = _current_backlight()
     return jsonify(payload)
 
