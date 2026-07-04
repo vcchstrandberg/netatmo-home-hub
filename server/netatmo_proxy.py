@@ -42,7 +42,7 @@ except Exception:
 
 load_dotenv()
 
-SERVER_VERSION = "1.15"
+SERVER_VERSION = "1.16"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -155,6 +155,13 @@ POLL_SECS  = 300
 ENV_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 DB_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics.db")
 RETAIN_DAYS = 7
+
+# Next-day forecast from the Norwegian Meteorological Institute (met.no). Keyless
+# and free, but their terms require an identifying User-Agent and no aggressive
+# polling — the forecast for tomorrow barely moves, so once an hour is plenty.
+FORECAST_URL       = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+FORECAST_UA        = f"netatmo-home-hub/{SERVER_VERSION} github.com/vcchstrandberg/netatmo-home-hub"
+FORECAST_POLL_SECS = 3600
 
 def _db_init():
     with sqlite3.connect(DB_FILE) as con:
@@ -311,6 +318,8 @@ _access_token  = None
 _refresh_token = os.environ["NETATMO_REFRESH_TOKEN"]
 _token_expiry  = 0.0
 _weather       = None
+_forecast      = None                         # tomorrow's forecast (see _fetch_forecast)
+_forecast_next = 0.0                           # epoch time of the next forecast fetch
 _geo           = {"lat": None, "lon": None}  # station coords from Netatmo place
 _sun_cache: dict = {}                         # (date, lat, lon) -> (sunrise, sunset)
 _log_buffer    = deque(maxlen=500)
@@ -433,6 +442,90 @@ def _fetch():
         pass
 
 
+# met.no symbol_code (minus any _day/_night/_polartwilight suffix) → emoji, so
+# the public page can show a glanceable icon without shipping an image set.
+_SYMBOL_EMOJI = {
+    "clearsky": "☀️", "fair": "🌤", "partlycloudy": "⛅", "cloudy": "☁️",
+    "fog": "🌫", "lightrainshowers": "🌦", "rainshowers": "🌦",
+    "heavyrainshowers": "🌧", "lightrain": "🌦", "rain": "🌧", "heavyrain": "🌧",
+    "lightsleet": "🌨", "sleet": "🌨", "heavysleet": "🌨",
+    "lightsnow": "🌨", "snow": "❄️", "heavysnow": "❄️",
+    "lightsnowshowers": "🌨", "snowshowers": "🌨",
+    "lightsleetshowers": "🌨", "sleetshowers": "🌨",
+    "rainandthunder": "⛈", "rainshowersandthunder": "⛈",
+    "heavyrainandthunder": "⛈", "snowandthunder": "⛈",
+}
+
+def _symbol_emoji(code: str) -> str:
+    """Map a met.no symbol_code to an emoji, tolerating the day/night suffix."""
+    base = (code or "").rsplit("_", 1)[0] if (code or "").endswith(
+        ("_day", "_night", "_polartwilight")) else (code or "")
+    return _SYMBOL_EMOJI.get(base, "🌡")
+
+
+def _fetch_forecast():
+    """Pull tomorrow's forecast from met.no for the station's coordinates and
+    reduce it to a single glanceable summary: high/low temp, total precip, and a
+    representative weather symbol (taken from the entry nearest midday). Local
+    time (the Pi's tz) defines the day boundary."""
+    global _forecast
+    with _lock:
+        lat, lon = _geo["lat"], _geo["lon"]
+    if lat is None or lon is None:
+        return  # no station coords yet; try again next cycle
+
+    r = requests.get(FORECAST_URL, params={"lat": round(lat, 4), "lon": round(lon, 4)},
+                     headers={"User-Agent": FORECAST_UA}, timeout=10)
+    r.raise_for_status()
+    series = r.json()["properties"]["timeseries"]
+
+    tomorrow = (datetime.now().astimezone() + timedelta(days=1)).date()
+    temps, precip, noon = [], 0.0, None
+    for entry in series:
+        t = datetime.fromisoformat(entry["time"].replace("Z", "+00:00")).astimezone()
+        if t.date() != tomorrow:
+            continue
+        details = entry["data"]["instant"]["details"]
+        if "air_temperature" in details:
+            temps.append(details["air_temperature"])
+        nxt = entry["data"].get("next_1_hours") or entry["data"].get("next_6_hours") or {}
+        precip += nxt.get("details", {}).get("precipitation_amount", 0.0)
+        # Track the entry closest to 12:00 local for a representative symbol.
+        if noon is None or abs(t.hour - 12) < abs(noon[0] - 12):
+            sym = nxt.get("summary", {}).get("symbol_code")
+            noon = (t.hour, sym)
+
+    if not temps:
+        return  # forecast didn't cover tomorrow yet; keep the previous value
+
+    with _lock:
+        _forecast = {
+            "date":        tomorrow.isoformat(),
+            "weekday":     tomorrow.strftime("%A"),
+            "temp_min":    round(min(temps)),
+            "temp_max":    round(max(temps)),
+            "precip_mm":   round(precip, 1),
+            "symbol_code": noon[1] if noon else None,
+            "updated_at":  int(time.time()),
+        }
+    _log(f"Forecast — {tomorrow} hi={max(temps):.0f}° lo={min(temps):.0f}° "
+         f"precip={precip:.1f}mm {noon[1] if noon else '?'}")
+
+
+def _maybe_fetch_forecast():
+    """Fetch the forecast if the throttle window has elapsed. Safe to call often."""
+    global _forecast_next
+    if time.time() < _forecast_next:
+        return
+    try:
+        _fetch_forecast()
+        _forecast_next = time.time() + FORECAST_POLL_SECS
+    except Exception as e:
+        # Back off a little on failure so a flaky met.no doesn't hammer the loop.
+        _forecast_next = time.time() + 300
+        _log(f"Forecast error: {e}")
+
+
 def _poll_loop():
     while True:
         time.sleep(POLL_SECS)
@@ -440,6 +533,7 @@ def _poll_loop():
             _fetch()
         except Exception as e:
             _log(f"Fetch error: {e}")
+        _maybe_fetch_forecast()
 
 
 def _ts():
@@ -878,6 +972,24 @@ def index():
     rain_banner = ("<div class='rain-banner'>🌧 Raining now</div>"
                    if raining else "")
 
+    with _lock:
+        f = dict(_forecast) if _forecast else None
+    if f:
+        precip_line = (f"{f['precip_mm']:.1f} mm rain" if f["precip_mm"] > 0
+                       else "No rain")
+        forecast_html = """
+<div class="forecast">
+  <div class="label">Tomorrow · """ + f["weekday"] + """</div>
+  <div class="forecast-row">
+    <span class="fc-icon">""" + _symbol_emoji(f["symbol_code"]) + """</span>
+    <span class="fc-temps"><span class="hi">""" + str(f["temp_max"]) + \
+        """°</span> / <span class="lo">""" + str(f["temp_min"]) + """°</span></span>
+    <span class="fc-precip">""" + precip_line + """</span>
+  </div>
+</div>"""
+    else:
+        forecast_html = ""
+
     html = """<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -919,6 +1031,16 @@ header .updated { font-size: 12px; color: var(--text2); }
 .rain-cell .when { font-size: 12px; color: var(--text2); margin-top: 4px; }
 .extras { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .extras .card .big { font-size: 22px; }
+.forecast { background: var(--bg2); border: 1px solid var(--border);
+            border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+.forecast .label { font-size: 13px; color: var(--text2); margin-bottom: 10px;
+                   text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+.forecast-row { display: flex; align-items: center; gap: 12px; }
+.fc-icon { font-size: 34px; line-height: 1; }
+.fc-temps { font-size: 24px; font-weight: 600; }
+.fc-temps .hi { color: var(--indoor); }
+.fc-temps .lo { color: var(--outdoor); }
+.fc-precip { margin-left: auto; font-size: 13px; color: var(--text2); }
 footer { text-align: center; margin-top: 20px; }
 footer a { color: var(--text3); font-size: 12px; text-decoration: none; }
 footer a:hover { color: var(--text2); }
@@ -948,7 +1070,7 @@ footer a:hover { color: var(--text2); }
     <div class="sub">""" + pressure + """ hPa</div>
   </div>
 </div>
-
+""" + forecast_html + """
 <div class="rain">
   <div class="label">Rain</div>
   <div class="rain-grid">
@@ -1612,6 +1734,8 @@ if __name__ == "__main__":
         _fetch()
     except Exception as e:
         _log(f"Initial fetch failed: {e}")
+
+    _maybe_fetch_forecast()
 
     t = threading.Thread(target=_poll_loop, daemon=True)
     t.start()
