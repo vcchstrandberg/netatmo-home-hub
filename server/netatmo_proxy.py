@@ -42,7 +42,7 @@ except Exception:
 
 load_dotenv()
 
-SERVER_VERSION = "1.16"
+SERVER_VERSION = "1.17"
 
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -978,15 +978,18 @@ def index():
         precip_line = (f"{f['precip_mm']:.1f} mm rain" if f["precip_mm"] > 0
                        else "No rain")
         forecast_html = """
-<div class="forecast">
-  <div class="label">Tomorrow · """ + f["weekday"] + """</div>
-  <div class="forecast-row">
-    <span class="fc-icon">""" + _symbol_emoji(f["symbol_code"]) + """</span>
-    <span class="fc-temps"><span class="hi">""" + str(f["temp_max"]) + \
+<section class="forecast">
+  <div class="section-title">Forecast</div>
+  <div class="fc-card">
+    <div class="label">Tomorrow · """ + f["weekday"] + """</div>
+    <div class="forecast-row">
+      <span class="fc-icon">""" + _symbol_emoji(f["symbol_code"]) + """</span>
+      <span class="fc-temps"><span class="hi">""" + str(f["temp_max"]) + \
         """°</span> / <span class="lo">""" + str(f["temp_min"]) + """°</span></span>
-    <span class="fc-precip">""" + precip_line + """</span>
+      <span class="fc-precip">""" + precip_line + """</span>
+    </div>
   </div>
-</div>"""
+</section>"""
     else:
         forecast_html = ""
 
@@ -1031,10 +1034,13 @@ header .updated { font-size: 12px; color: var(--text2); }
 .rain-cell .when { font-size: 12px; color: var(--text2); margin-top: 4px; }
 .extras { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .extras .card .big { font-size: 22px; }
-.forecast { background: var(--bg2); border: 1px solid var(--border);
-            border-radius: 10px; padding: 16px; margin-bottom: 12px; }
-.forecast .label { font-size: 13px; color: var(--text2); margin-bottom: 10px;
-                   text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+.forecast { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+.section-title { font-size: 12px; color: var(--text3); margin-bottom: 10px;
+                 text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+.fc-card { background: var(--bg2); border: 1px solid var(--border);
+           border-radius: 10px; padding: 16px; }
+.fc-card .label { font-size: 13px; color: var(--text2); margin-bottom: 10px;
+                  text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
 .forecast-row { display: flex; align-items: center; gap: 12px; }
 .fc-icon { font-size: 34px; line-height: 1; }
 .fc-temps { font-size: 24px; font-weight: 600; }
@@ -1070,7 +1076,7 @@ footer a:hover { color: var(--text2); }
     <div class="sub">""" + pressure + """ hPa</div>
   </div>
 </div>
-""" + forecast_html + """
+
 <div class="rain">
   <div class="label">Rain</div>
   <div class="rain-grid">
@@ -1095,7 +1101,7 @@ footer a:hover { color: var(--text2); }
     <div><span class="big">""" + noise + """</span><span class="unit">dB</span></div>
   </div>
 </div>
-
+""" + forecast_html + """
 <footer><a href="/admin">Admin</a></footer>
 
 </div>
